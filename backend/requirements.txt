@@ -1,0 +1,11 @@
+fastapi==0.111.0
+uvicorn==0.30.0
+fyers-apiv3
+pandas
+numpy
+python-dotenv
+httpx
+supabase
+python-jose[cryptography]
+pyotp
+requests
