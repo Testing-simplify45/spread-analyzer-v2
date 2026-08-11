@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-void text-bright font-sans;
+    background-image:
+      radial-gradient(circle at 50% 0%, rgba(27,117,255,0.07) 0%, transparent 55%),
+      linear-gradient(rgba(30,38,61,0.12) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(30,38,61,0.12) 1px, transparent 1px);
+    background-size: 100% 100%, 30px 30px, 30px 30px;
+  }
+
+  * { box-sizing: border-box; }
+}
+
+@layer components {
+  .glass {
+    background: rgba(14, 18, 32, 0.85);
+    backdrop-filter: blur(16px);
+  }
+
+  .btn-primary {
+    @apply w-full py-3.5 rounded-xl bg-cyan text-void font-bold text-[15px]
+           tracking-wide hover:bg-cyan/90 transition-all shadow-lg shadow-cyan/10
+           active:scale-[0.98] flex items-center justify-center gap-2;
+  }
+
+  .btn-blue {
+    @apply w-full py-4 rounded-xl bg-blue text-white font-semibold
+           hover:bg-blue/90 transition-all shadow-lg shadow-blue/20
+           flex items-center justify-center gap-3 active:scale-[0.98];
+  }
+
+  .btn-outline {
+    @apply w-full py-3.5 rounded-xl border border-cyan/20 bg-cyan/5 text-cyan
+           hover:bg-cyan/10 hover:border-cyan/40 transition-all text-[11px]
+           font-bold tracking-wider uppercase flex items-center justify-center gap-2;
+  }
+
+  .input-field {
+    @apply w-full bg-panelLight/40 border border-edge rounded-xl px-4 py-3.5
+           text-sm font-mono text-bright outline-none
+           focus:border-cyan focus:ring-1 focus:ring-cyan/20 transition-all
+           placeholder:text-ink/40;
+  }
+
+  .card {
+    @apply glass border border-edge/50 rounded-3xl p-8 shadow-2xl;
+  }
+
+  .sidebar-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-ink
+           hover:text-bright hover:bg-panelLight/60 transition-all
+           cursor-pointer text-sm font-medium;
+  }
+
+  .sidebar-item.active {
+    @apply text-cyan bg-cyan/10 border border-cyan/20;
+  }
+
+  .table-header {
+    @apply text-[11px] font-mono text-ink uppercase tracking-wider py-3 px-4;
+  }
+
+  .table-cell {
+    @apply py-3 px-4 font-mono text-sm border-b border-edge/40;
+  }
+
+  .spread-positive { @apply text-emerald font-semibold; }
+  .spread-negative { @apply text-crimson font-semibold; }
+  .spread-neutral  { @apply text-ink; }
+
+  .stat-card {
+    @apply bg-panelLight border border-edge rounded-xl p-4;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #1e263d; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #8b92a8; }
+
+/* Animations */
+@keyframes ping {
+  0%, 100% { transform: scale(1); opacity: 0.75; }
+  50%       { transform: scale(2); opacity: 0; }
+}
+.animate-ping-slow { animation: ping 2s ease-in-out infinite; }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fadeIn 0.4s ease forwards; }
