@@ -175,3 +175,142 @@ def get_multi_day_history(
         "data":    records,
         "symbols": {"sym1": sym1, "sym2": sym2},
     }
+
+
+# ── Butterfly Index endpoint ──────────────────────────────────────────────────
+
+class ButterflyIndexRequest(BaseModel):
+    exchange:    str
+    underlying:  str
+    exp1:        str
+    strike1:     int
+    exp2:        str
+    strike2:     int
+    exp3:        str
+    strike3:     int
+    type:        str
+    trade_date:  str
+    resolution:  str = "1"
+
+
+@router.post("/butterfly-index")
+def butterfly_index(body: ButterflyIndexRequest, authorization: str = Header(None)):
+    """
+    Butterfly Index spread.
+    Formula: (Leg3 - Leg2) - (Leg2 - Leg1)
+           = Leg1 - 2*Leg2 + Leg3
+    """
+    fyers = _get_fyers(authorization)
+    d     = date.fromisoformat(body.trade_date)
+
+    sym1 = build_symbol(body.exchange, body.underlying, body.exp1, body.strike1, body.type)
+    sym2 = build_symbol(body.exchange, body.underlying, body.exp2, body.strike2, body.type)
+    sym3 = build_symbol(body.exchange, body.underlying, body.exp3, body.strike3, body.type)
+
+    from services.fyers_service import get_candles
+    df1 = get_candles(fyers, sym1, d, body.resolution)
+    df2 = get_candles(fyers, sym2, d, body.resolution)
+    df3 = get_candles(fyers, sym3, d, body.resolution)
+
+    if df1.empty or df2.empty or df3.empty:
+        return {"data": [], "stats": {}}
+
+    common = df1.index.intersection(df2.index).intersection(df3.index)
+    if common.empty:
+        return {"data": [], "stats": {}}
+
+    result = pd.DataFrame({
+        "timestamp":   common,
+        "leg1_price":  df1.loc[common, "close"].values,
+        "leg2_price":  df2.loc[common, "close"].values,
+        "leg3_price":  df3.loc[common, "close"].values,
+    })
+
+    # Formula: (Leg3 - Leg2) - (Leg2 - Leg1)
+    result["spread"]      = (result["leg3_price"] - result["leg2_price"]) - (result["leg2_price"] - result["leg1_price"])
+    result["spread_high"] = (df3.loc[common, "high"].values  - df2.loc[common, "low"].values)  - (df2.loc[common, "low"].values  - df1.loc[common, "high"].values)
+    result["spread_low"]  = (df3.loc[common, "low"].values   - df2.loc[common, "high"].values) - (df2.loc[common, "high"].values - df1.loc[common, "low"].values)
+
+    from services.fyers_service import compute_day_stats
+    stats = compute_day_stats(result)
+    result["timestamp"] = result["timestamp"].astype(str)
+    records = result[["timestamp", "spread", "spread_high", "spread_low"]].to_dict("records")
+
+    return {"data": records, "stats": stats}
+
+
+# ── Butterfly NFO-BFO endpoint ────────────────────────────────────────────────
+
+class ButterflyNfoBfoRequest(BaseModel):
+    leg1_exchange:    str
+    leg1_underlying:  str
+    leg1_expiry:      str
+    leg1_strike:      int
+    leg2a_exchange:   str
+    leg2a_underlying: str
+    leg2a_expiry:     str
+    leg2a_strike:     int
+    leg2b_exchange:   str
+    leg2b_underlying: str
+    leg2b_expiry:     str
+    leg2b_strike:     int
+    leg3_exchange:    str
+    leg3_underlying:  str
+    leg3_expiry:      str
+    leg3_strike:      int
+    option_type:      str
+    ratio:            float = 3.3
+    trade_date:       str
+    resolution:       str = "1"
+
+
+@router.post("/butterfly-nfobfo")
+def butterfly_nfobfo(body: ButterflyNfoBfoRequest, authorization: str = Header(None)):
+    """
+    Butterfly NFO-BFO spread.
+    Formula: (Leg2a - Leg1*Ratio) + (Leg2b - Leg3*Ratio)
+    """
+    fyers = _get_fyers(authorization)
+    d     = date.fromisoformat(body.trade_date)
+
+    sym1  = build_symbol(body.leg1_exchange,  body.leg1_underlying,  body.leg1_expiry,  body.leg1_strike,  body.option_type)
+    sym2a = build_symbol(body.leg2a_exchange, body.leg2a_underlying, body.leg2a_expiry, body.leg2a_strike, body.option_type)
+    sym2b = build_symbol(body.leg2b_exchange, body.leg2b_underlying, body.leg2b_expiry, body.leg2b_strike, body.option_type)
+    sym3  = build_symbol(body.leg3_exchange,  body.leg3_underlying,  body.leg3_expiry,  body.leg3_strike,  body.option_type)
+
+    from services.fyers_service import get_candles
+    df1  = get_candles(fyers, sym1,  d, body.resolution)
+    df2a = get_candles(fyers, sym2a, d, body.resolution)
+    df2b = get_candles(fyers, sym2b, d, body.resolution)
+    df3  = get_candles(fyers, sym3,  d, body.resolution)
+
+    if df1.empty or df2a.empty or df2b.empty or df3.empty:
+        return {"data": [], "stats": {}}
+
+    common = df1.index.intersection(df2a.index).intersection(df2b.index).intersection(df3.index)
+    if common.empty:
+        return {"data": [], "stats": {}}
+
+    r = body.ratio
+    result = pd.DataFrame({"timestamp": common})
+
+    # Formula: (Leg2a - Leg1*ratio) + (Leg2b - Leg3*ratio)
+    result["spread"] = (
+        (df2a.loc[common, "close"].values - df1.loc[common, "close"].values * r) +
+        (df2b.loc[common, "close"].values - df3.loc[common, "close"].values * r)
+    )
+    result["spread_high"] = (
+        (df2a.loc[common, "high"].values - df1.loc[common, "low"].values * r) +
+        (df2b.loc[common, "high"].values - df3.loc[common, "low"].values * r)
+    )
+    result["spread_low"] = (
+        (df2a.loc[common, "low"].values - df1.loc[common, "high"].values * r) +
+        (df2b.loc[common, "low"].values - df3.loc[common, "high"].values * r)
+    )
+
+    from services.fyers_service import compute_day_stats
+    stats = compute_day_stats(result)
+    result["timestamp"] = result["timestamp"].astype(str)
+    records = result[["timestamp", "spread", "spread_high", "spread_low"]].to_dict("records")
+
+    return {"data": records, "stats": stats}
