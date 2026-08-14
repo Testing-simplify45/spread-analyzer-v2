@@ -222,6 +222,10 @@ export default function ButterflyIndexPage() {
                   {p}
                 </button>
               ))}
+              <button onClick={handleLoadHistory} disabled={histLoading}
+                className="ml-2 px-3 py-1 rounded-lg text-xs font-mono font-semibold bg-panelLight border border-cyan/30 text-cyan hover:bg-cyan/10 transition-all disabled:opacity-50">
+                {histLoading ? '...' : 'Load'}
+              </button>
             </div>
           </div>
           <HistoricalChart data={histData} title={`${chartTitle} — ${histPeriod}`} />
