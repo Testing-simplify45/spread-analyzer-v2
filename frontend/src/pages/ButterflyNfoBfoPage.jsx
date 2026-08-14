@@ -133,6 +133,44 @@ export default function ButterflyNfoBfoPage() {
   const leg2Label = leg2Underlying
   const leg3Label = leg3Underlying
 
+  const handleLoadHistory = useCallback(async () => {
+    if (!exp1?.code || !exp2a?.code || !exp2b?.code || !exp3?.code) return
+    setHistLoading(true)
+    try {
+      const daysMap = { '1D': 1, '5D': 5, '1M': 22, '6M': 130 }
+      const frames = []
+      let d = new Date(tradeDate)
+      let collected = 0
+      while (collected < daysMap[histPeriod]) {
+        if (d.getDay() !== 0 && d.getDay() !== 6) {
+          const dateStr = d.toISOString().split('T')[0]
+          try {
+            const res = await axios.post(`${BASE_URL}/spreads/butterfly-nfobfo`, {
+              leg1_exchange: leg1Exchange, leg1_underlying: leg1Underlying,
+              leg1_expiry: exp1.code, leg1_strike: strike1,
+              leg2a_exchange: leg2Exchange, leg2a_underlying: leg2Underlying,
+              leg2a_expiry: exp2a.code, leg2a_strike: strike2a,
+              leg2b_exchange: leg2Exchange, leg2b_underlying: leg2Underlying,
+              leg2b_expiry: exp2b.code, leg2b_strike: strike2b,
+              leg3_exchange: leg3Exchange, leg3_underlying: leg3Underlying,
+              leg3_expiry: exp3.code, leg3_strike: strike3,
+              option_type: type, ratio, trade_date: dateStr, resolution: '1',
+            }, { headers: { Authorization: authHeader } })
+            if (res.data.data?.length) {
+              frames.push(...res.data.data.map(r => ({ ...r, date: dateStr })))
+            }
+          } catch (e) { console.error(e) }
+          collected++
+        }
+        d.setDate(d.getDate() - 1)
+      }
+      setHistData(frames.reverse())
+    } catch (err) { console.error(err) }
+    finally { setHistLoading(false) }
+  }, [exp1, exp2a, exp2b, exp3, strike1, strike2a, strike2b, strike3,
+      leg1Exchange, leg1Underlying, leg2Exchange, leg2Underlying,
+      leg3Exchange, leg3Underlying, type, ratio, tradeDate, histPeriod, authHeader])
+
   const chartTitle = `${leg2Label} − ${leg1Label}×${ratio} + ${leg2Label} − ${leg3Label}×${ratio}`
 
   const expSelect = (list, val, onChange, loading) => (
@@ -344,6 +382,10 @@ export default function ButterflyNfoBfoPage() {
                   {p}
                 </button>
               ))}
+              <button onClick={handleLoadHistory} disabled={histLoading}
+                className="ml-2 px-3 py-1 rounded-lg text-xs font-mono font-semibold bg-panelLight border border-cyan/30 text-cyan hover:bg-cyan/10 transition-all disabled:opacity-50">
+                {histLoading ? '...' : 'Load'}
+              </button>
             </div>
           </div>
           <HistoricalChart data={histData} title={`Butterfly NFO-BFO — ${histPeriod}`} />
