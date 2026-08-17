@@ -5,7 +5,7 @@ Option Spread Analyzer Backend
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import auth, spreads, instruments
+from routers import auth, spreads, instruments, straddle
 
 app = FastAPI(
     title="Option Spread Analyzer API",
@@ -13,19 +13,18 @@ app = FastAPI(
     description="Real-time option spread analysis powered by Fyers API",
 )
 
-# ── CORS ─────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Will restrict to Vercel URL in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(auth.router,        prefix="/api/auth",        tags=["Auth"])
 app.include_router(instruments.router, prefix="/api/instruments",  tags=["Instruments"])
 app.include_router(spreads.router,     prefix="/api/spreads",      tags=["Spreads"])
+app.include_router(straddle.router,    prefix="/api/straddle",     tags=["Straddle"])
 
 
 @app.get("/")
