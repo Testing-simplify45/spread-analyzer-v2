@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../../hooks/useAuthStore'
+import { useNotificationStore } from '../../hooks/useNotificationStore'
+import { fetchAllSpots } from '../../utils/api'
 
-function NavItem({ to, icon, label, active }) {
+function NavItem({ to, icon, label }) {
   return (
     <NavLink to={to} className={({ isActive }) =>
       `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer
@@ -19,16 +21,24 @@ function IndexCard({ label, value, change, positive }) {
     <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-panelLight border border-edge">
       <div>
         <p className="text-[10px] font-mono text-ink/60 uppercase tracking-wider">{label}</p>
-        <p className="text-sm font-bold font-mono text-bright">{value}</p>
+        <p className="text-sm font-bold font-mono text-bright">
+          {value ? value.toLocaleString('en-IN', { minimumFractionDigits: 2 }) : '—'}
+        </p>
       </div>
-      <span className={`text-[11px] font-mono font-semibold ${positive ? 'text-emerald' : 'text-crimson'}`}>{change}</span>
+      {change != null && (
+        <span className={`text-[11px] font-mono font-semibold ${positive ? 'text-emerald' : 'text-crimson'}`}>
+          {positive ? '+' : ''}{change.toFixed(2)}%
+        </span>
+      )}
     </div>
   )
 }
 
+// ── Icons ──────────────────────────────────────────────────────────────────
 const ChartIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+    <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
+    <line x1="6" y1="20" x2="6" y2="14"/>
   </svg>
 )
 const BoltIcon = () => (
@@ -38,22 +48,98 @@ const BoltIcon = () => (
 )
 const WingIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/>
-    <path d="M8 12h8M12 8v8"/>
+    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+  </svg>
+)
+const StraddleIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+  </svg>
+)
+const SpreadIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+    <polyline points="17 6 23 6 23 12"/>
   </svg>
 )
 
+// ── Notification Panel ─────────────────────────────────────────────────────
+function NotificationPanel({ onClose }) {
+  const { notifications, markAllRead, clearAll } = useNotificationStore()
+
+  useEffect(() => { markAllRead() }, [])
+
+  return (
+    <div className="absolute right-0 top-10 w-80 bg-panel border border-edge rounded-2xl shadow-2xl z-50 overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-edge">
+        <span className="text-sm font-semibold text-bright">Notifications</span>
+        <button onClick={clearAll}
+          className="text-[10px] font-mono text-ink hover:text-crimson transition-colors">
+          Clear All
+        </button>
+      </div>
+      <div className="max-h-80 overflow-y-auto">
+        {notifications.length === 0 ? (
+          <div className="px-4 py-8 text-center text-ink font-mono text-sm">No notifications</div>
+        ) : notifications.map(n => (
+          <div key={n.id}
+            className={`px-4 py-3 border-b border-edge/40 hover:bg-panelLight/40 transition-colors
+              ${!n.read ? 'border-l-2 border-l-amber-400' : ''}`}>
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-xs font-semibold text-bright">{n.title}</p>
+                <p className="text-[11px] text-ink mt-0.5 leading-relaxed">{n.message}</p>
+              </div>
+              <span className="text-[10px] font-mono text-ink/50 flex-shrink-0">{n.timestamp}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function DashboardLayout() {
-  const { logout } = useAuthStore()
-  const navigate   = useNavigate()
+  const { logout, getAuthHeader }  = useAuthStore()
+  const { unreadCount }            = useNotificationStore()
+  const navigate                   = useNavigate()
+  const authHeader                 = getAuthHeader()
   const [butterflyOpen, setButterflyOpen] = useState(false)
+  const [showNotifs,    setShowNotifs]    = useState(false)
+  const notifRef = useRef(null)
+
+  // Live spot prices
+  const [spots, setSpots] = useState({ NIFTY: null, BANKNIFTY: null, SENSEX: null })
+
+  useEffect(() => {
+    const loadSpots = async () => {
+      try {
+        const data = await fetchAllSpots(authHeader)
+        setSpots(data)
+      } catch (e) { console.error(e) }
+    }
+    loadSpots()
+    const interval = setInterval(loadSpots, 30000) // refresh every 30s
+    return () => clearInterval(interval)
+  }, [authHeader])
+
+  // Close notif panel on outside click
+  useEffect(() => {
+    const handler = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) {
+        setShowNotifs(false)
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   const handleLogout = () => { logout(); navigate('/login', { replace: true }) }
 
   return (
     <div className="flex h-screen overflow-hidden bg-void">
 
-      {/* Sidebar */}
+      {/* ── Sidebar ──────────────────────────────────────────────────────── */}
       <aside className="w-[220px] flex-shrink-0 flex flex-col bg-panel border-r border-edge">
 
         {/* Logo */}
@@ -70,18 +156,16 @@ export default function DashboardLayout() {
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
 
-          {/* Monitors */}
           <p className="text-[10px] font-mono text-ink/50 uppercase tracking-widest px-2 mb-2">Monitors</p>
 
-          <NavItem to="/dashboard/spread-analysis" icon={<ChartIcon />} label="Spread Analysis" />
-          <NavItem to="/dashboard/nfo-bfo" icon={<BoltIcon />} label="NFO-BFO Spreads" />
+          <NavItem to="/dashboard/spread-analysis" icon={<SpreadIcon />}  label="Spread Analysis" />
+          <NavItem to="/dashboard/nfo-bfo"          icon={<BoltIcon />}   label="NFO-BFO Spreads" />
+          <NavItem to="/dashboard/straddle"         icon={<StraddleIcon />} label="Straddle Monitor" />
 
           {/* Butterfly */}
-          <div className="mt-2">
-            <button
-              onClick={() => setButterflyOpen(!butterflyOpen)}
-              className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium text-ink hover:text-bright hover:bg-panelLight/60 transition-all"
-            >
+          <div className="mt-1">
+            <button onClick={() => setButterflyOpen(!butterflyOpen)}
+              className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium text-ink hover:text-bright hover:bg-panelLight/60 transition-all">
               <div className="flex items-center gap-3">
                 <WingIcon />
                 Butterfly Spread
@@ -91,39 +175,26 @@ export default function DashboardLayout() {
                 <polyline points="6 9 12 15 18 9"/>
               </svg>
             </button>
-
             {butterflyOpen && (
               <div className="ml-4 mt-1 space-y-1 border-l border-edge pl-3">
-                <NavItem to="/dashboard/butterfly-index" icon={
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <rect x="3" y="3" width="18" height="18" rx="2"/>
-                  </svg>
-                } label="Index" />
-                <NavItem to="/dashboard/butterfly-nfo-bfo" icon={
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                  </svg>
-                } label="NFO-BFO" />
+                <NavItem to="/dashboard/butterfly-index"   icon={<ChartIcon />} label="Index" />
+                <NavItem to="/dashboard/butterfly-nfo-bfo" icon={<BoltIcon />}  label="NFO-BFO" />
               </div>
             )}
           </div>
 
         </nav>
 
-        {/* Index prices */}
+        {/* Live Index Prices */}
         <div className="px-3 py-3 border-t border-edge space-y-2">
-          <IndexCard label="NIFTY 50" value="23,300.00" change="+0.84%" positive />
-          <IndexCard label="SENSEX"   value="77,000.20" change="+0.61%" positive />
+          <p className="text-[10px] font-mono text-ink/40 uppercase tracking-widest px-1">Live Spot</p>
+          <IndexCard label="NIFTY 50"   value={spots.NIFTY}     change={null} positive />
+          <IndexCard label="SENSEX"      value={spots.SENSEX}    change={null} positive />
+          <IndexCard label="BANKNIFTY"   value={spots.BANKNIFTY} change={null} positive />
         </div>
 
         {/* Actions */}
         <div className="px-3 py-3 border-t border-edge space-y-2">
-          <button className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-cyan/10 border border-cyan/20 text-cyan text-xs font-semibold hover:bg-cyan/20 transition-all">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.99"/>
-            </svg>
-            Refresh All Data
-          </button>
           <button onClick={handleLogout}
             className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-crimson/10 border border-crimson/20 text-crimson text-xs font-semibold hover:bg-crimson/20 transition-all">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -136,7 +207,7 @@ export default function DashboardLayout() {
 
       </aside>
 
-      {/* Main */}
+      {/* ── Main ─────────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden">
 
         {/* Navbar */}
@@ -151,18 +222,32 @@ export default function DashboardLayout() {
               <span className="text-[10px] font-mono text-emerald font-semibold">Live API Connected</span>
             </div>
           </div>
+
           <div className="flex items-center gap-3">
-            <button className="w-8 h-8 rounded-lg bg-panelLight border border-edge flex items-center justify-center text-ink hover:text-bright transition-colors">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-                <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-              </svg>
-            </button>
+            {/* Bell icon with notification count */}
+            <div className="relative" ref={notifRef}>
+              <button
+                onClick={() => setShowNotifs(!showNotifs)}
+                className="relative w-8 h-8 rounded-lg bg-panelLight border border-edge flex items-center justify-center text-ink hover:text-bright transition-colors"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                </svg>
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-crimson text-white text-[10px] font-bold flex items-center justify-center">
+                    {unreadCount > 99 ? '99+' : unreadCount}
+                  </span>
+                )}
+              </button>
+              {showNotifs && <NotificationPanel onClose={() => setShowNotifs(false)} />}
+            </div>
+
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan to-blue flex items-center justify-center text-void text-xs font-bold">U</div>
           </div>
         </header>
 
-        {/* Content */}
+        {/* Page content */}
         <main className="flex-1 overflow-y-auto"><Outlet /></main>
 
         {/* Status bar */}
@@ -170,6 +255,7 @@ export default function DashboardLayout() {
           <span>Market Status: <span className="text-emerald font-semibold">OPEN</span></span>
           <span>Latency: <span className="text-bright">2.4ms</span></span>
         </footer>
+
       </div>
     </div>
   )
