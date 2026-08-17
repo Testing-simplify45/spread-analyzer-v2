@@ -7,6 +7,7 @@ import NfoBfoPage from './pages/NfoBfoPage'
 import SpreadAnalysisPage from './pages/SpreadAnalysisPage'
 import ButterflyIndexPage from './pages/ButterflyIndexPage'
 import ButterflyNfoBfoPage from './pages/ButterflyNfoBfoPage'
+import StraddlePage from './pages/StraddlePage'
 
 export default function App() {
   const { isAuthenticated } = useAuthStore()
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="spread-analysis"    element={<SpreadAnalysisPage />} />
         <Route path="butterfly-index"    element={<ButterflyIndexPage />} />
         <Route path="butterfly-nfo-bfo"  element={<ButterflyNfoBfoPage />} />
+        <Route path="straddle"           element={<StraddlePage />} />
       </Route>
 
       {/* Default */}
