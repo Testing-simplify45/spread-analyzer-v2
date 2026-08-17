@@ -7,8 +7,7 @@ const api = axios.create({
   timeout: 15000,
 })
 
-// ── Auth endpoints ────────────────────────────────────────────────────────────
-
+// ── Auth ──────────────────────────────────────────────────────────────────────
 export const getLoginUrl = () =>
   api.get('/auth/login-url').then(r => r.data.url)
 
@@ -18,8 +17,7 @@ export const generateToken = (authCode) =>
 export const extractAuthCode = (url) =>
   api.get('/auth/extract-code', { params: { url } }).then(r => r.data)
 
-// ── Instrument endpoints ──────────────────────────────────────────────────────
-
+// ── Instruments ───────────────────────────────────────────────────────────────
 export const getExpiries = (underlying, authHeader) =>
   api.get(`/instruments/expiries/${underlying}`, {
     headers: { Authorization: authHeader }
@@ -28,8 +26,7 @@ export const getExpiries = (underlying, authHeader) =>
 export const getAtm = (underlying) =>
   api.get(`/instruments/atm/${underlying}`).then(r => r.data)
 
-// ── Spread endpoints ──────────────────────────────────────────────────────────
-
+// ── Spreads ───────────────────────────────────────────────────────────────────
 export const fetchBatchLtp = (rows, ratio, authHeader) =>
   api.post('/spreads/batch-ltp', { rows, ratio }, {
     headers: { Authorization: authHeader }
@@ -45,4 +42,21 @@ export const fetchMultiDayHistory = (row, days, resolution, authHeader) =>
   api.post('/spreads/multi-day-history', row, {
     params:  { days, resolution },
     headers: { Authorization: authHeader },
+  }).then(r => r.data)
+
+// ── Straddle ──────────────────────────────────────────────────────────────────
+export const fetchAllSpots = (authHeader) =>
+  api.get('/straddle/all-spots', {
+    headers: { Authorization: authHeader }
+  }).then(r => r.data)
+
+export const fetchStraddleTable = (underlying, authHeader) =>
+  api.get(`/straddle/table/${underlying}`, {
+    headers: { Authorization: authHeader }
+  }).then(r => r.data)
+
+export const fetchIntradayStraddle = (underlying, expiryCode, atmStrike, authHeader) =>
+  api.get(`/straddle/intraday/${underlying}/${expiryCode}`, {
+    params:  { atm_strike: atmStrike },
+    headers: { Authorization: authHeader }
   }).then(r => r.data)
