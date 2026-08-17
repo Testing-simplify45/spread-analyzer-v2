@@ -125,34 +125,38 @@ def get_straddle_table(underlying: str, authorization: str = Header(None)):
     today = date.today()
 
     spot = get_spot_price(fyers, und)
-    if not spot:
-        raise HTTPException(status_code=404, detail="Could not fetch spot price")
+    if not spot or spot <= 0:
+        # Return empty data instead of 404 so frontend handles gracefully
+        return {"underlying": und, "spot": None, "atm": None, "data": [], "error": "Could not fetch spot price"}
 
     atm_strike = round_atm(spot, und)
     expiries   = get_expiries(fyers, und)
     if not expiries:
-        raise HTTPException(status_code=404, detail="Could not fetch expiries")
+        return {"underlying": und, "spot": spot, "atm": atm_strike, "data": [], "error": "Could not fetch expiries"}
 
     results = []
-    for exp in expiries:
-        code  = exp["code"]
-        label = exp["label"]
-        today_data = get_straddle_ltp(fyers, und, code, atm_strike)
-        yesterday  = get_prev_day_straddle(fyers, und, code, atm_strike, today)
-        today_val  = today_data.get("straddle")
-        change     = round(today_val - yesterday, 2) if today_val and yesterday else None
-        results.append({
-            "expiry":      label,
-            "expiry_code": code,
-            "atm_strike":  atm_strike,
-            "spot":        spot,
-            "yesterday":   yesterday,
-            "today":       today_val,
-            "change":      change,
-            "ce_ltp":      today_data.get("ce_ltp"),
-            "pe_ltp":      today_data.get("pe_ltp"),
-            "threshold":   ALERT_THRESHOLDS.get(und, 15),
-        })
+    for exp in expiries[:8]:  # Limit to first 8 expiries to avoid timeout
+        try:
+            code  = exp["code"]
+            label = exp["label"]
+            today_data = get_straddle_ltp(fyers, und, code, atm_strike)
+            yesterday  = get_prev_day_straddle(fyers, und, code, atm_strike, today)
+            today_val  = today_data.get("straddle")
+            change     = round(today_val - yesterday, 2) if today_val and yesterday else None
+            results.append({
+                "expiry":      label,
+                "expiry_code": code,
+                "atm_strike":  atm_strike,
+                "spot":        spot,
+                "yesterday":   yesterday,
+                "today":       today_val,
+                "change":      change,
+                "ce_ltp":      today_data.get("ce_ltp"),
+                "pe_ltp":      today_data.get("pe_ltp"),
+                "threshold":   ALERT_THRESHOLDS.get(und, 15),
+            })
+        except Exception as e:
+            continue
 
     return {"underlying": und, "spot": spot, "atm": atm_strike, "data": results}
 
