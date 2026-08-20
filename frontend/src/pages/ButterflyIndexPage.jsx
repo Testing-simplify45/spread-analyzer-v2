@@ -15,14 +15,12 @@ export default function ButterflyIndexPage() {
   const { getAuthHeader } = useAuthStore()
   const authHeader = getAuthHeader()
 
-  // All 3 legs same exchange, only NIFTY
   const [exchange,   setExchange]  = useState('NSE')
   const [expList,    setExpList]   = useState([])
   const [loadingExp, setLoadingExp]= useState(false)
   const [type,       setType]      = useState('CE')
   const [tradeDate,  setTradeDate] = useState(new Date().toISOString().split('T')[0])
 
-  // Per-leg controls
   const [exp1,    setExp1]    = useState(null)
   const [strike1, setStrike1] = useState(23300)
   const [exp2,    setExp2]    = useState(null)
@@ -30,7 +28,6 @@ export default function ButterflyIndexPage() {
   const [exp3,    setExp3]    = useState(null)
   const [strike3, setStrike3] = useState(23300)
 
-  // Chart state
   const [loading,    setLoading]    = useState(false)
   const [chartData,  setChartData]  = useState([])
   const [chartStats, setChartStats] = useState(null)
@@ -57,14 +54,14 @@ export default function ButterflyIndexPage() {
   }
 
   const handleFetch = useCallback(async () => {
-    if (!exp1?.code || !exp2?.code || !exp3?.code) { alert('Please wait for expiries to load'); return }
+    if (!exp1?.code || !exp2?.code || !exp3?.code) {
+      alert('Please wait for expiries to load')
+      return
+    }
     setLoading(true)
     setChartData([])
     setChartStats(null)
     try {
-      // Formula: (Leg3 - Leg2) - (Leg2 - Leg1)
-      // = Leg3 - 2*Leg2 + Leg1
-      // We compute this by fetching 3 candle series and combining
       const res = await axios.post(`${BASE_URL}/spreads/butterfly-index`, {
         exchange,
         underlying: 'NIFTY',
@@ -85,6 +82,38 @@ export default function ButterflyIndexPage() {
     }
   }, [exchange, exp1, strike1, exp2, strike2, exp3, strike3, type, tradeDate, authHeader])
 
+  const handleLoadHistory = useCallback(async () => {
+    if (!exp1?.code || !exp2?.code || !exp3?.code) return
+    const daysMap = { '1D': 1, '5D': 5, '1M': 22, '6M': 130 }
+    setHistLoading(true)
+    try {
+      const frames = []
+      let d = new Date(tradeDate)
+      let collected = 0
+      while (collected < daysMap[histPeriod]) {
+        if (d.getDay() !== 0 && d.getDay() !== 6) {
+          const dateStr = d.toISOString().split('T')[0]
+          try {
+            const res = await axios.post(`${BASE_URL}/spreads/butterfly-index`, {
+              exchange, underlying: 'NIFTY',
+              exp1: exp1.code, strike1, type,
+              exp2: exp2.code, strike2,
+              exp3: exp3.code, strike3,
+              trade_date: dateStr, resolution: '1',
+            }, { headers: { Authorization: authHeader } })
+            if (res.data.data?.length) {
+              frames.push(...res.data.data.map(r => ({ ...r, date: dateStr })))
+            }
+          } catch (e) { console.error(e) }
+          collected++
+        }
+        d.setDate(d.getDate() - 1)
+      }
+      setHistData(frames.reverse())
+    } catch (err) { console.error(err) }
+    finally { setHistLoading(false) }
+  }, [exp1, exp2, exp3, strike1, strike2, strike3, type, tradeDate, histPeriod, exchange, authHeader])
+
   const chartTitle = `${exchange} NIFTY Butterfly · ${strike1}/${strike2}/${strike3} ${type}`
 
   return (
@@ -96,8 +125,6 @@ export default function ButterflyIndexPage() {
 
       {/* Controls */}
       <div className="bg-panel border border-edge rounded-2xl p-5 mb-6">
-
-        {/* Common */}
         <div className="grid grid-cols-3 gap-3 mb-5">
           <div>
             <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Exchange</label>
@@ -160,7 +187,7 @@ export default function ButterflyIndexPage() {
           className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan text-void font-bold text-sm hover:bg-cyan/90 transition-all disabled:opacity-50">
           {loading
             ? <><svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Fetching...</>
-            : 'Fetch Butterfly Data'}
+            : '🦋 Fetch Butterfly Data'}
         </button>
       </div>
 
