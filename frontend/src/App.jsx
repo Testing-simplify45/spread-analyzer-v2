@@ -10,8 +10,6 @@ import ButterflyNfoBfoPage from './pages/ButterflyNfoBfoPage'
 import StraddlePage from './pages/StraddlePage'
 import StraddleSpreadPage from './pages/StraddleSpreadPage'
 
-import StraddleSpreadPage from './pages/StraddleSpreadPage'
-
 export default function App() {
   const { isAuthenticated } = useAuthStore()
 
