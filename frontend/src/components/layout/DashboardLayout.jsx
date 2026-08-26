@@ -105,6 +105,7 @@ export default function DashboardLayout() {
   const navigate                   = useNavigate()
   const authHeader                 = getAuthHeader()
   const [butterflyOpen, setButterflyOpen] = useState(false)
+  const [straddleOpen,  setStraddleOpen]  = useState(false)
   const [showNotifs,    setShowNotifs]    = useState(false)
   const notifRef = useRef(null)
 
@@ -161,6 +162,26 @@ export default function DashboardLayout() {
           <NavItem to="/dashboard/spread-analysis" icon={<SpreadIcon />}  label="Spread Analysis" />
           <NavItem to="/dashboard/nfo-bfo"          icon={<BoltIcon />}   label="NFO-BFO Spreads" />
           <NavItem to="/dashboard/straddle"         icon={<StraddleIcon />} label="Straddle Monitor" />
+
+          {/* Straddle Spread */}
+          <div className="mt-1">
+            <button onClick={() => setStraddleOpen(!straddleOpen)}
+              className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium text-ink hover:text-bright hover:bg-panelLight/60 transition-all">
+              <div className="flex items-center gap-3">
+                <StraddleIcon />
+                Straddle Spread
+              </div>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                className={`transition-transform ${straddleOpen ? 'rotate-180' : ''}`}>
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+            {straddleOpen && (
+              <div className="ml-4 mt-1 space-y-1 border-l border-edge pl-3">
+                <NavItem to="/dashboard/straddle-spread-nfobfo" icon={<BoltIcon />} label="NFO-BFO" />
+              </div>
+            )}
+          </div>
 
           {/* Butterfly */}
           <div className="mt-1">
