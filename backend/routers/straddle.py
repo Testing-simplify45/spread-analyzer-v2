@@ -119,14 +119,13 @@ def get_all_spots(authorization: str = Header(None)):
 
 @router.get("/table/{underlying}")
 def get_straddle_table(underlying: str, authorization: str = Header(None)):
-    """Get straddle values for all live expiries."""
+    """Get straddle values for all live expiries using single batch LTP call."""
     fyers = _get_fyers(authorization)
     und   = underlying.upper()
     today = date.today()
 
     spot = get_spot_price(fyers, und)
     if not spot or spot <= 0:
-        # Return empty data instead of 404 so frontend handles gracefully
         return {"underlying": und, "spot": None, "atm": None, "data": [], "error": "Could not fetch spot price"}
 
     atm_strike = round_atm(spot, und)
@@ -134,15 +133,36 @@ def get_straddle_table(underlying: str, authorization: str = Header(None)):
     if not expiries:
         return {"underlying": und, "spot": spot, "atm": atm_strike, "data": [], "error": "Could not fetch expiries"}
 
+    exchange = EXCHANGE_MAP.get(und, "NSE")
+
+    # Build ALL symbols for one single batch call
+    exp_subset = expiries[:8]
+    all_symbols = []
+    for exp in exp_subset:
+        code = exp["code"]
+        all_symbols.append(build_symbol(exchange, und, code, atm_strike, "CE"))
+        all_symbols.append(build_symbol(exchange, und, code, atm_strike, "PE"))
+
+    # Single batch LTP call for all expiries
+    ltp_map = get_batch_ltp(fyers, all_symbols)
+
     results = []
-    for exp in expiries[:8]:  # Limit to first 8 expiries to avoid timeout
+    for exp in exp_subset:
         try:
             code  = exp["code"]
             label = exp["label"]
-            today_data = get_straddle_ltp(fyers, und, code, atm_strike)
-            yesterday  = get_prev_day_straddle(fyers, und, code, atm_strike, today)
-            today_val  = today_data.get("straddle")
-            change     = round(today_val - yesterday, 2) if today_val and yesterday else None
+
+            sym_ce = build_symbol(exchange, und, code, atm_strike, "CE")
+            sym_pe = build_symbol(exchange, und, code, atm_strike, "PE")
+
+            ce_ltp = ltp_map.get(sym_ce)
+            pe_ltp = ltp_map.get(sym_pe)
+            today_val = round(ce_ltp + pe_ltp, 2) if ce_ltp and pe_ltp else None
+
+            # Yesterday close
+            yesterday = get_prev_day_straddle(fyers, und, code, atm_strike, today)
+            change    = round(today_val - yesterday, 2) if today_val and yesterday else None
+
             results.append({
                 "expiry":      label,
                 "expiry_code": code,
@@ -151,12 +171,16 @@ def get_straddle_table(underlying: str, authorization: str = Header(None)):
                 "yesterday":   yesterday,
                 "today":       today_val,
                 "change":      change,
-                "ce_ltp":      today_data.get("ce_ltp"),
-                "pe_ltp":      today_data.get("pe_ltp"),
+                "ce_ltp":      ce_ltp,
+                "pe_ltp":      pe_ltp,
                 "threshold":   ALERT_THRESHOLDS.get(und, 15),
+                "sym_ce":      sym_ce,
+                "sym_pe":      sym_pe,
             })
         except Exception as e:
             continue
+
+    return {"underlying": und, "spot": spot, "atm": atm_strike, "data": results}
 
     return {"underlying": und, "spot": spot, "atm": atm_strike, "data": results}
 
