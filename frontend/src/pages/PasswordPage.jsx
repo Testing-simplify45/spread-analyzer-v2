@@ -56,27 +56,27 @@ export default function PasswordPage() {
       </div>
 
       <div className="flex-1 flex items-center justify-center px-4 relative z-20">
-        <main className="w-full max-w-[400px] animate-fade-in">
+        <main className="w-full max-w-[340px] animate-fade-in">
 
           {/* Brand */}
-          <div className="text-center mb-10">
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-panelLight border border-edge shadow-xl mb-6">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-panelLight border border-edge shadow-xl mb-4">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                 <path d="M4 16L10 8L16 14L20 6" stroke="#00cbd6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M4 16L10 8L16 14L20 6" stroke="#1b75ff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" transform="translate(1,-1)" opacity=".4" />
               </svg>
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-white mb-2">Secure Login</h1>
-            <p className="text-ink text-sm">Enter your password to continue</p>
+            <h1 className="text-xl font-bold tracking-tight text-white mb-1">Secure Login</h1>
+            <p className="text-ink text-xs">Enter your password to continue</p>
           </div>
 
           {/* Card */}
-          <div className="card space-y-4">
+          <div className="glass border border-edge/50 rounded-2xl p-6 shadow-2xl space-y-3">
 
             {/* Password input */}
             <div className="relative group">
               <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8b92a8" strokeWidth="2">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8b92a8" strokeWidth="2">
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
                   <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                 </svg>
@@ -86,7 +86,7 @@ export default function PasswordPage() {
                 value={password}
                 onChange={e => { setPassword(e.target.value); setError('') }}
                 placeholder="Enter your password"
-                className="input-field pl-11 pr-12"
+                className="w-full bg-panelLight/40 border border-edge rounded-xl px-4 py-3 pl-10 pr-10 text-sm font-mono text-bright outline-none focus:border-cyan focus:ring-1 focus:ring-cyan/20 transition-all placeholder:text-ink/40"
                 onKeyDown={e => e.key === 'Enter' && handleLogin()}
                 autoFocus
               />
@@ -96,13 +96,13 @@ export default function PasswordPage() {
                 className="absolute inset-y-0 right-4 flex items-center text-ink hover:text-bright transition-colors"
               >
                 {showPass ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
                     <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
                     <line x1="1" y1="1" x2="23" y2="23"/>
                   </svg>
                 ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                     <circle cx="12" cy="12" r="3"/>
                   </svg>
@@ -118,7 +118,7 @@ export default function PasswordPage() {
             <button
               onClick={handleLogin}
               disabled={loading}
-              className="btn-blue"
+              className="w-full py-3 rounded-xl bg-blue text-white font-semibold hover:bg-blue/90 transition-all flex items-center justify-center gap-2 text-sm active:scale-[0.98]"
             >
               {loading ? (
                 <span className="flex items-center gap-2">
@@ -134,9 +134,9 @@ export default function PasswordPage() {
             {/* Back */}
             <button
               onClick={handleBack}
-              className="w-full text-center text-sm text-ink hover:text-bright transition-colors flex items-center justify-center gap-2 py-2"
+              className="w-full text-center text-xs text-ink hover:text-bright transition-colors flex items-center justify-center gap-1.5 py-1"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M19 12H5M5 12l7-7M5 12l7 7"/>
               </svg>
               Back to Login
@@ -145,7 +145,7 @@ export default function PasswordPage() {
           </div>
 
           {/* Status */}
-          <div className="mt-8 flex justify-center">
+          <div className="mt-6 flex justify-center">
             <div className="px-3 py-1.5 rounded-full bg-emerald/5 border border-emerald/10 flex items-center gap-2">
               <span className="relative flex h-1.5 w-1.5">
                 <span className="animate-ping-slow absolute inline-flex h-full w-full rounded-full bg-emerald opacity-75" />
