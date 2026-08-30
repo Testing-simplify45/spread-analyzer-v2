@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAuthStore } from '../hooks/useAuthStore'
 import { getExpiries } from '../utils/api'
 import SpreadChart, { HistoricalChart } from '../components/SpreadChart'
+import { computeStatsFromData } from '../utils/computeStats'
 import axios from 'axios'
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api'
@@ -64,13 +65,15 @@ export default function StraddleSpreadPage() {
   const [loadingExp,   setLoadingExp]  = useState(false)
   const [selectedIdx,  setSelectedIdx] = useState(null)
   const [chartData,    setChartData]   = useState([])
-  const [chartStats,   setChartStats]  = useState(null)
   const [chartLoading, setChartLoading]= useState(false)
   const [chartType,    setChartType]   = useState('line')
   const [resolution,   setResolution]  = useState('1min')
   const [histData,     setHistData]    = useState([])
   const [histPeriod,   setHistPeriod]  = useState('1D')
   const [histLoading,  setHistLoading] = useState(false)
+
+  // Compute stats from actual chart data
+  const chartStats = computeStatsFromData(chartData)
 
   // Auto load expiries
   useEffect(() => { loadExp1() }, [und1])
@@ -266,7 +269,6 @@ export default function StraddleSpreadPage() {
       } : null
 
       setChartData(combined)
-      setChartStats(stats)
     } catch (err) {
       console.error(err)
     } finally {
