@@ -56,7 +56,7 @@ export default function PasswordPage() {
       </div>
 
       <div className="flex-1 flex items-center justify-center px-4 relative z-20">
-        <main className="w-full max-w-[340px] animate-fade-in">
+        <main className="w-full max-w-[260px] animate-fade-in">
 
           {/* Brand */}
           <div className="text-center mb-8">
