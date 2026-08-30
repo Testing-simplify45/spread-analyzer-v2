@@ -20,19 +20,21 @@ export default function SpreadChart({ data, stats, title, type = 'line', resolut
     )
   }
 
-  const timestamps  = data.map(d => d.timestamp)
-  const spreads     = data.map(d => d.spread)
-  const spreadHigh  = data.map(d => d.spread_high ?? d.spread)
-  const spreadLow   = data.map(d => d.spread_low  ?? d.spread)
+  const timestamps = data.map(d => d.timestamp)
+  const spreads    = data.map(d => d.spread)
 
-  // Smart Y-axis range
-  const allY   = [...spreads, ...spreadHigh, ...spreadLow].filter(v => v != null)
-  const yMin   = Math.min(...allY)
-  const yMax   = Math.max(...allY)
-  const yRange = Math.max(yMax - yMin, 1)
-  const pad    = yRange * 0.07
-  const yLo    = yMin - pad
-  const yHi    = yMax + pad
+  // ── Compute H/L/O from ACTUAL spread close values only ───────────────────
+  const yMin    = Math.min(...spreads)
+  const yMax    = Math.max(...spreads)
+  const yRange  = Math.max(yMax - yMin, 1)
+  const pad     = yRange * 0.07
+  const yLo     = yMin - pad
+  const yHi     = yMax + pad
+
+  const dayOpen  = spreads[0]
+  const dayHigh  = yMax
+  const dayLow   = yMin
+  const dayCurrent = spreads[spreads.length - 1]
 
   // Market hours X range
   const firstTs = timestamps[0]
@@ -40,25 +42,52 @@ export default function SpreadChart({ data, stats, title, type = 'line', resolut
   const xMin    = dayStr ? `${dayStr} 09:10:00` : null
   const xMax    = dayStr ? `${dayStr} 15:35:00` : null
 
-  // Build traces
+  // ── H/L/O reference lines ─────────────────────────────────────────────────
+  const shapes      = []
+  const annotations = []
+
+  shapes.push({ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: dayHigh, y1: dayHigh,
+    line: { color: COLORS.emerald, width: 1, dash: 'dash' } })
+  annotations.push({ x: 1, xref: 'paper', y: dayHigh,
+    text: `H ${dayHigh.toFixed(2)}`, showarrow: false,
+    xanchor: 'left', font: { color: COLORS.emerald, size: 10 }, xshift: 8 })
+
+  shapes.push({ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: dayLow, y1: dayLow,
+    line: { color: COLORS.crimson, width: 1, dash: 'dash' } })
+  annotations.push({ x: 1, xref: 'paper', y: dayLow,
+    text: `L ${dayLow.toFixed(2)}`, showarrow: false,
+    xanchor: 'left', font: { color: COLORS.crimson, size: 10 }, xshift: 8 })
+
+  shapes.push({ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: dayOpen, y1: dayOpen,
+    line: { color: COLORS.amber, width: 1, dash: 'longdash' } })
+  annotations.push({ x: 1, xref: 'paper', y: dayOpen,
+    text: `O ${dayOpen.toFixed(2)}`, showarrow: false,
+    xanchor: 'left', font: { color: COLORS.amber, size: 10 }, xshift: 8 })
+
+  // ── Build traces ──────────────────────────────────────────────────────────
   const traces = []
 
   if (type === 'candlestick') {
-    // Group into candles by resolution
-    const minutes = resolution === '5min' ? 5 : resolution === '15min' ? 15 : 1
-    const grouped = groupIntoCandles(data, minutes)
+    const grouped = groupIntoCandles(data, resolutionToMinutes(resolution))
+    if (grouped.length > 0) {
+      // Recompute Y range from candle H/L
+      const candleHighs = grouped.map(c => c.high)
+      const candleLows  = grouped.map(c => c.low)
+      const cMin = Math.min(...candleLows)
+      const cMax = Math.max(...candleHighs)
 
-    traces.push({
-      type:  'candlestick',
-      x:     grouped.map(c => c.time),
-      open:  grouped.map(c => c.open),
-      high:  grouped.map(c => c.high),
-      low:   grouped.map(c => c.low),
-      close: grouped.map(c => c.close),
-      increasing: { line: { color: COLORS.emerald } },
-      decreasing: { line: { color: COLORS.crimson } },
-      name: 'Spread',
-    })
+      traces.push({
+        type: 'candlestick',
+        x:     grouped.map(c => c.time),
+        open:  grouped.map(c => c.open),
+        high:  grouped.map(c => c.high),
+        low:   grouped.map(c => c.low),
+        close: grouped.map(c => c.close),
+        increasing: { line: { color: COLORS.emerald } },
+        decreasing: { line: { color: COLORS.crimson } },
+        name: 'Spread',
+      })
+    }
   } else {
     traces.push({
       type: 'scatter',
@@ -67,31 +96,8 @@ export default function SpreadChart({ data, stats, title, type = 'line', resolut
       y:    spreads,
       name: 'Spread',
       line: { color: COLORS.cyan, width: 2, shape: 'spline' },
-      hovertemplate: '<b>%{x}</b><br>Spread: <b>%{y:.2f}</b><extra></extra>',
+      hovertemplate: '<b>%{x|%H:%M}</b><br>Spread: <b>%{y:.2f}</b><extra></extra>',
     })
-  }
-
-  // H/L/O reference lines
-  const shapes = []
-  const annotations = []
-
-  if (stats?.high != null) {
-    shapes.push({ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: stats.high, y1: stats.high,
-      line: { color: COLORS.emerald, width: 1, dash: 'dash' } })
-    annotations.push({ x: 1, xref: 'paper', y: stats.high, text: `H ${stats.high.toFixed(2)}`,
-      showarrow: false, xanchor: 'left', font: { color: COLORS.emerald, size: 10 }, xshift: 8 })
-  }
-  if (stats?.low != null) {
-    shapes.push({ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: stats.low, y1: stats.low,
-      line: { color: COLORS.crimson, width: 1, dash: 'dash' } })
-    annotations.push({ x: 1, xref: 'paper', y: stats.low, text: `L ${stats.low.toFixed(2)}`,
-      showarrow: false, xanchor: 'left', font: { color: COLORS.crimson, size: 10 }, xshift: 8 })
-  }
-  if (stats?.open != null) {
-    shapes.push({ type: 'line', x0: 0, x1: 1, xref: 'paper', y0: stats.open, y1: stats.open,
-      line: { color: COLORS.amber, width: 1, dash: 'longdash' } })
-    annotations.push({ x: 1, xref: 'paper', y: stats.open, text: `O ${stats.open.toFixed(2)}`,
-      showarrow: false, xanchor: 'left', font: { color: COLORS.amber, size: 10 }, xshift: 8 })
   }
 
   const layout = {
@@ -131,7 +137,7 @@ export default function SpreadChart({ data, stats, title, type = 'line', resolut
   )
 }
 
-// Historical daily candlestick chart
+// ── Historical daily OHLC chart ───────────────────────────────────────────────
 export function HistoricalChart({ data, title }) {
   if (!data || data.length === 0) {
     return (
@@ -141,7 +147,7 @@ export function HistoricalChart({ data, title }) {
     )
   }
 
-  // Group by date for daily OHLC
+  // Group by date for daily OHLC — use actual spread values
   const byDate = {}
   data.forEach(d => {
     const date = d.date || d.timestamp?.split(' ')[0] || d.timestamp?.split('T')[0]
@@ -155,11 +161,12 @@ export function HistoricalChart({ data, title }) {
   const high   = dates.map(d => Math.max(...byDate[d]))
   const low    = dates.map(d => Math.min(...byDate[d]))
 
-  const allY   = [...high, ...low].filter(v => v != null)
-  const yMin   = Math.min(...allY)
-  const yMax   = Math.max(...allY)
-  const yRange = Math.max(yMax - yMin, 1)
-  const pad    = yRange * 0.07
+  // Smart Y range from actual candle data
+  const allH  = [...high, ...low].filter(v => v != null)
+  const yMin  = Math.min(...allH)
+  const yMax  = Math.max(...allH)
+  const yRng  = Math.max(yMax - yMin, 1)
+  const padH  = yRng * 0.07
 
   const layout = {
     title: { text: title, font: { size: 12, color: COLORS.bright }, x: 0.01 },
@@ -169,7 +176,7 @@ export function HistoricalChart({ data, title }) {
     font: { color: COLORS.ink, size: 11 },
     margin: { l: 55, r: 30, t: 40, b: 45 },
     xaxis: { gridcolor: COLORS.edge, rangeslider: { visible: false } },
-    yaxis: { gridcolor: COLORS.edge, range: [yMin - pad, yMax + pad], autorange: false },
+    yaxis: { gridcolor: COLORS.edge, range: [yMin - padH, yMax + padH], autorange: false },
     hovermode: 'x unified',
   }
 
@@ -189,7 +196,13 @@ export function HistoricalChart({ data, title }) {
   )
 }
 
-// Helper: group tick data into OHLC candles
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function resolutionToMinutes(resolution) {
+  const map = { '1min': 1, '5min': 5, '15min': 15, '30min': 30 }
+  return map[resolution] || 1
+}
+
 function groupIntoCandles(data, minutes) {
   const grouped = {}
   data.forEach(d => {
