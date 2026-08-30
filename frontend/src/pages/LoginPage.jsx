@@ -56,22 +56,22 @@ export default function LoginPage() {
 
       {/* Main */}
       <div className="flex-1 flex items-center justify-center px-4 relative z-20">
-        <main className="w-full max-w-[400px] animate-fade-in">
+        <main className="w-full max-w-[340px] animate-fade-in">
 
           {/* Brand */}
-          <div className="text-center mb-10">
-            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-panelLight border border-edge shadow-xl mb-6 hover:scale-105 transition-transform">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-panelLight border border-edge shadow-xl mb-4 hover:scale-105 transition-transform">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
                 <path d="M4 16L10 8L16 14L20 6" stroke="#00cbd6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M4 16L10 8L16 14L20 6" stroke="#1b75ff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" transform="translate(1,-1)" opacity=".4" />
               </svg>
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-white mb-2">Option Spread Analyzer</h1>
-            <p className="text-ink text-sm">Connect your account to start analyzing</p>
+            <h1 className="text-xl font-bold tracking-tight text-white mb-1">Option Spread Analyzer</h1>
+            <p className="text-ink text-xs">Connect your account to start analyzing</p>
           </div>
 
           {/* Card */}
-          <div className="card space-y-6">
+          <div className="glass border border-edge/50 rounded-2xl p-6 shadow-2xl space-y-4">
 
             {error && (
               <p className="text-crimson text-xs font-mono px-1 text-center">{error}</p>
@@ -81,7 +81,7 @@ export default function LoginPage() {
             <button
               onClick={handleLogin}
               disabled={loading}
-              className="btn-blue"
+              className="w-full py-3 rounded-xl bg-blue text-white font-semibold hover:bg-blue/90 transition-all flex items-center justify-center gap-3 active:scale-[0.98] text-sm"
             >
               {loading ? (
                 <span className="flex items-center gap-2">
@@ -97,7 +97,7 @@ export default function LoginPage() {
           </div>
 
           {/* Status */}
-          <div className="mt-8 flex justify-center">
+          <div className="mt-6 flex justify-center">
             <div className="px-3 py-1.5 rounded-full bg-emerald/5 border border-emerald/10 flex items-center gap-2">
               <span className="relative flex h-1.5 w-1.5">
                 <span className="animate-ping-slow absolute inline-flex h-full w-full rounded-full bg-emerald opacity-75" />
