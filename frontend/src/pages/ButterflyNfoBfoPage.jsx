@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAuthStore } from '../hooks/useAuthStore'
 import { getExpiries } from '../utils/api'
 import SpreadChart, { HistoricalChart } from '../components/SpreadChart'
+import { computeStatsFromData } from '../utils/computeStats'
 import axios from 'axios'
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api'
@@ -11,55 +12,47 @@ function fmtVal(v) {
   return (v > 0 ? '+' : '') + v.toFixed(2)
 }
 
-// Leg 1 and Leg 3 are always same underlying
-// Leg 2 is always the opposite
-// Formula: (Leg2 - Leg1*Ratio) + (Leg2 - Leg3*Ratio)
-
 export default function ButterflyNfoBfoPage() {
   const { getAuthHeader } = useAuthStore()
   const authHeader = getAuthHeader()
 
-  // First leg determines the structure
   const [leg1Underlying, setLeg1Underlying] = useState('NIFTY')
   const leg2Underlying = leg1Underlying === 'NIFTY' ? 'SENSEX' : 'NIFTY'
-  const leg3Underlying = leg1Underlying // always same as leg1
+  const leg3Underlying = leg1Underlying
+  const leg1Exchange   = leg1Underlying === 'NIFTY' ? 'NSE' : 'BSE'
+  const leg2Exchange   = leg2Underlying === 'NIFTY' ? 'NSE' : 'BSE'
+  const leg3Exchange   = leg1Exchange
 
-  const leg1Exchange = leg1Underlying === 'NIFTY' ? 'NSE' : 'BSE'
-  const leg2Exchange = leg2Underlying === 'NIFTY' ? 'NSE' : 'BSE'
-  const leg3Exchange = leg1Exchange
-
-  // Expiries
   const [leg1ExpList, setLeg1ExpList] = useState([])
   const [leg2ExpList, setLeg2ExpList] = useState([])
   const [loadingExp,  setLoadingExp]  = useState(false)
 
-  // Leg controls
-  const [exp1,    setExp1]    = useState(null)
-  const [strike1, setStrike1] = useState(23300)
-  const [exp2a,   setExp2a]   = useState(null)  // Spread 1 middle
-  const [strike2a,setStrike2a]= useState(77000)
-  const [exp2b,   setExp2b]   = useState(null)  // Spread 2 middle
-  const [strike2b,setStrike2b]= useState(77000)
-  const [exp3,    setExp3]    = useState(null)
-  const [strike3, setStrike3] = useState(23300)
+  const [exp1,     setExp1]     = useState(null)
+  const [strike1,  setStrike1]  = useState(23300)
+  const [exp2a,    setExp2a]    = useState(null)
+  const [strike2a, setStrike2a] = useState(77000)
+  const [exp2b,    setExp2b]    = useState(null)
+  const [strike2b, setStrike2b] = useState(77000)
+  const [exp3,     setExp3]     = useState(null)
+  const [strike3,  setStrike3]  = useState(23300)
 
   const [type,      setType]      = useState('CE')
   const [ratio,     setRatio]     = useState(3.3)
   const [tradeDate, setTradeDate] = useState(new Date().toISOString().split('T')[0])
 
-  // Chart state
   const [loading,    setLoading]    = useState(false)
   const [chartData,  setChartData]  = useState([])
-  const [chartStats, setChartStats] = useState(null)
   const [chartType,  setChartType]  = useState('line')
   const [resolution, setResolution] = useState('1min')
   const [histData,   setHistData]   = useState([])
   const [histPeriod, setHistPeriod] = useState('1D')
   const [histLoading,setHistLoading]= useState(false)
 
+  // Compute stats from actual chart data
+  const chartStats = computeStatsFromData(chartData)
+
   useEffect(() => { loadExpiries() }, [leg1Underlying])
   useEffect(() => {
-    // Update default strikes based on underlying
     if (leg1Underlying === 'NIFTY') {
       setStrike1(23300); setStrike3(23300)
       setStrike2a(77000); setStrike2b(77000)
@@ -86,38 +79,23 @@ export default function ButterflyNfoBfoPage() {
 
   const handleFetch = useCallback(async () => {
     if (!exp1?.code || !exp2a?.code || !exp2b?.code || !exp3?.code) {
-      alert('Please wait for expiries to load')
-      return
+      alert('Please wait for expiries to load'); return
     }
     setLoading(true)
     setChartData([])
-    setChartStats(null)
     try {
       const res = await axios.post(`${BASE_URL}/spreads/butterfly-nfobfo`, {
-        leg1_exchange:    leg1Exchange,
-        leg1_underlying:  leg1Underlying,
-        leg1_expiry:      exp1.code,
-        leg1_strike:      strike1,
-        leg2a_exchange:   leg2Exchange,
-        leg2a_underlying: leg2Underlying,
-        leg2a_expiry:     exp2a.code,
-        leg2a_strike:     strike2a,
-        leg2b_exchange:   leg2Exchange,
-        leg2b_underlying: leg2Underlying,
-        leg2b_expiry:     exp2b.code,
-        leg2b_strike:     strike2b,
-        leg3_exchange:    leg3Exchange,
-        leg3_underlying:  leg3Underlying,
-        leg3_expiry:      exp3.code,
-        leg3_strike:      strike3,
-        option_type:      type,
-        ratio,
-        trade_date:       tradeDate,
-        resolution:       '1',
+        leg1_exchange: leg1Exchange, leg1_underlying: leg1Underlying,
+        leg1_expiry: exp1.code, leg1_strike: strike1,
+        leg2a_exchange: leg2Exchange, leg2a_underlying: leg2Underlying,
+        leg2a_expiry: exp2a.code, leg2a_strike: strike2a,
+        leg2b_exchange: leg2Exchange, leg2b_underlying: leg2Underlying,
+        leg2b_expiry: exp2b.code, leg2b_strike: strike2b,
+        leg3_exchange: leg3Exchange, leg3_underlying: leg3Underlying,
+        leg3_expiry: exp3.code, leg3_strike: strike3,
+        option_type: type, ratio, trade_date: tradeDate, resolution: '1',
       }, { headers: { Authorization: authHeader } })
-
       setChartData(res.data.data || [])
-      setChartStats(res.data.stats || null)
     } catch (err) {
       console.error(err)
       alert('Failed to fetch butterfly NFO-BFO data')
@@ -129,15 +107,11 @@ export default function ButterflyNfoBfoPage() {
       leg3Exchange, leg3Underlying, exp3, strike3,
       type, ratio, tradeDate, authHeader])
 
-  const leg1Label = leg1Underlying
-  const leg2Label = leg2Underlying
-  const leg3Label = leg3Underlying
-
   const handleLoadHistory = useCallback(async () => {
     if (!exp1?.code || !exp2a?.code || !exp2b?.code || !exp3?.code) return
+    const daysMap = { '1D': 1, '5D': 5, '1M': 22, '6M': 130 }
     setHistLoading(true)
     try {
-      const daysMap = { '1D': 1, '5D': 5, '1M': 22, '6M': 130 }
       const frames = []
       let d = new Date(tradeDate)
       let collected = 0
@@ -171,13 +145,13 @@ export default function ButterflyNfoBfoPage() {
       leg1Exchange, leg1Underlying, leg2Exchange, leg2Underlying,
       leg3Exchange, leg3Underlying, type, ratio, tradeDate, histPeriod, authHeader])
 
-  const chartTitle = `${leg2Label} − ${leg1Label}×${ratio} + ${leg2Label} − ${leg3Label}×${ratio}`
+  const chartTitle = `${leg2Underlying} − ${leg1Underlying}×${ratio} + ${leg2Underlying} − ${leg3Underlying}×${ratio}`
 
-  const expSelect = (list, val, onChange, loading) => (
+  const expSelect = (list, val, onChange) => (
     <select value={val?.code || ''} onChange={e => onChange(list.find(x => x.code === e.target.value))}
       className="w-full bg-panel border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan">
       {list.length ? list.map(e => <option key={e.code} value={e.code}>{e.label}</option>)
-        : <option value="">{loading ? 'Loading...' : '— Load —'}</option>}
+        : <option value="">{loadingExp ? 'Loading...' : '— Load —'}</option>}
     </select>
   )
 
@@ -185,22 +159,17 @@ export default function ButterflyNfoBfoPage() {
     <div className="p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-bright tracking-tight">Butterfly Spread — NFO-BFO</h1>
-        <p className="text-sm text-ink mt-1">
-          Formula: (Leg2 − Leg1×Ratio) + (Leg2 − Leg3×Ratio)
-        </p>
+        <p className="text-sm text-ink mt-1">Formula: (Leg2 − Leg1×Ratio) + (Leg2 − Leg3×Ratio)</p>
       </div>
 
       {/* Controls */}
       <div className="bg-panel border border-edge rounded-2xl p-5 mb-6">
-
-        {/* Common params */}
         <div className="grid grid-cols-4 gap-3 mb-5">
           <div>
             <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Leg 1 / Leg 3</label>
             <select value={leg1Underlying} onChange={e => setLeg1Underlying(e.target.value)}
               className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan">
-              <option>NIFTY</option>
-              <option>SENSEX</option>
+              <option>NIFTY</option><option>SENSEX</option>
             </select>
           </div>
           <div>
@@ -223,22 +192,20 @@ export default function ButterflyNfoBfoPage() {
           </div>
         </div>
 
-        {/* 4 legs grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
-
           {/* Leg 1 */}
           <div className="bg-panelLight/40 border border-edge rounded-xl p-4">
             <div className="flex items-center gap-2 mb-3">
               <div className="w-2 h-2 rounded-full bg-blue" />
               <span className="text-xs font-mono font-semibold text-bright">Leg 1</span>
-              <span className="text-[10px] font-mono text-ink">{leg1Label} · {leg1Exchange}</span>
+              <span className="text-[10px] font-mono text-ink">{leg1Underlying}</span>
             </div>
             <div className="space-y-2">
               <div>
                 <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">
                   Expiry {loadingExp && <span className="text-cyan">...</span>}
                 </label>
-                {expSelect(leg1ExpList, exp1, setExp1, loadingExp)}
+                {expSelect(leg1ExpList, exp1, setExp1)}
               </div>
               <div>
                 <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Strike</label>
@@ -248,19 +215,17 @@ export default function ButterflyNfoBfoPage() {
             </div>
           </div>
 
-          {/* Leg 2a - Spread 1 middle */}
+          {/* Leg 2a */}
           <div className="bg-panelLight/40 border border-cyan/20 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-3">
               <div className="w-2 h-2 rounded-full bg-cyan" />
               <span className="text-xs font-mono font-semibold text-bright">Leg 2 (Spread 1)</span>
-              <span className="text-[10px] font-mono text-ink">{leg2Label}</span>
+              <span className="text-[10px] font-mono text-ink">{leg2Underlying}</span>
             </div>
             <div className="space-y-2">
               <div>
-                <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">
-                  Expiry {loadingExp && <span className="text-cyan">...</span>}
-                </label>
-                {expSelect(leg2ExpList, exp2a, setExp2a, loadingExp)}
+                <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Expiry</label>
+                {expSelect(leg2ExpList, exp2a, setExp2a)}
               </div>
               <div>
                 <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Strike</label>
@@ -270,19 +235,17 @@ export default function ButterflyNfoBfoPage() {
             </div>
           </div>
 
-          {/* Leg 2b - Spread 2 middle */}
+          {/* Leg 2b */}
           <div className="bg-panelLight/40 border border-cyan/20 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-3">
               <div className="w-2 h-2 rounded-full bg-cyan" />
               <span className="text-xs font-mono font-semibold text-bright">Leg 2 (Spread 2)</span>
-              <span className="text-[10px] font-mono text-ink">{leg2Label}</span>
+              <span className="text-[10px] font-mono text-ink">{leg2Underlying}</span>
             </div>
             <div className="space-y-2">
               <div>
-                <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">
-                  Expiry {loadingExp && <span className="text-cyan">...</span>}
-                </label>
-                {expSelect(leg2ExpList, exp2b, setExp2b, loadingExp)}
+                <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Expiry</label>
+                {expSelect(leg2ExpList, exp2b, setExp2b)}
               </div>
               <div>
                 <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Strike</label>
@@ -297,14 +260,12 @@ export default function ButterflyNfoBfoPage() {
             <div className="flex items-center gap-2 mb-3">
               <div className="w-2 h-2 rounded-full bg-emerald" />
               <span className="text-xs font-mono font-semibold text-bright">Leg 3</span>
-              <span className="text-[10px] font-mono text-ink">{leg3Label} · {leg3Exchange}</span>
+              <span className="text-[10px] font-mono text-ink">{leg3Underlying}</span>
             </div>
             <div className="space-y-2">
               <div>
-                <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">
-                  Expiry {loadingExp && <span className="text-cyan">...</span>}
-                </label>
-                {expSelect(leg1ExpList, exp3, setExp3, loadingExp)}
+                <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Expiry</label>
+                {expSelect(leg1ExpList, exp3, setExp3)}
               </div>
               <div>
                 <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Strike</label>
@@ -313,7 +274,6 @@ export default function ButterflyNfoBfoPage() {
               </div>
             </div>
           </div>
-
         </div>
 
         <button onClick={handleFetch} disabled={loading}
@@ -324,7 +284,7 @@ export default function ButterflyNfoBfoPage() {
         </button>
       </div>
 
-      {/* Stats */}
+      {/* Stats — computed from actual chart data */}
       {chartStats && (
         <div className="grid grid-cols-4 gap-3 mb-4">
           {[
