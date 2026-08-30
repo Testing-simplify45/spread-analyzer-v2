@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAuthStore } from '../hooks/useAuthStore'
 import { getExpiries, fetchSpreadHistory, fetchMultiDayHistory } from '../utils/api'
 import SpreadChart, { HistoricalChart } from '../components/SpreadChart'
+import { computeStatsFromData } from '../utils/computeStats'
 
 const UNDERLYINGS = {
   NSE: ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'],
@@ -20,16 +21,11 @@ function fmtVal(v) {
   if (v == null) return '—'
   return (v > 0 ? '+' : '') + v.toFixed(2)
 }
-function valColor(v) {
-  if (v == null) return 'text-ink'
-  return v > 0 ? 'text-emerald font-semibold' : v < 0 ? 'text-crimson font-semibold' : 'text-ink'
-}
 
 export default function SpreadAnalysisPage() {
   const { getAuthHeader } = useAuthStore()
   const authHeader = getAuthHeader()
 
-  // Leg 1
   const [ex1,      setEx1]      = useState('NSE')
   const [und1,     setUnd1]     = useState('NIFTY')
   const [exp1List, setExp1List] = useState([])
@@ -37,7 +33,6 @@ export default function SpreadAnalysisPage() {
   const [strike1,  setStrike1]  = useState(ATM_DEFAULTS['NIFTY'])
   const [type1,    setType1]    = useState('CE')
 
-  // Leg 2
   const [ex2,      setEx2]      = useState('BSE')
   const [und2,     setUnd2]     = useState('SENSEX')
   const [exp2List, setExp2List] = useState([])
@@ -45,22 +40,20 @@ export default function SpreadAnalysisPage() {
   const [strike2,  setStrike2]  = useState(ATM_DEFAULTS['SENSEX'])
   const [type2,    setType2]    = useState('CE')
 
-  // Chart state
-  const [tradeDate,    setTradeDate]    = useState(new Date().toISOString().split('T')[0])
-  const [loading,      setLoading]      = useState(false)
-  const [chartData,    setChartData]    = useState([])
-  const [chartStats,   setChartStats]   = useState(null)
-  const [chartType,    setChartType]    = useState('line')
-  const [resolution,   setResolution]   = useState('1min')
-  const [histData,     setHistData]     = useState([])
-  const [histPeriod,   setHistPeriod]   = useState('1D')
-  const [histLoading,  setHistLoading]  = useState(false)
-  const [ltp1,         setLtp1]         = useState(null)
-  const [ltp2,         setLtp2]         = useState(null)
-  const [loadingExp1,  setLoadingExp1]  = useState(false)
-  const [loadingExp2,  setLoadingExp2]  = useState(false)
+  const [tradeDate,   setTradeDate]   = useState(new Date().toISOString().split('T')[0])
+  const [loading,     setLoading]     = useState(false)
+  const [chartData,   setChartData]   = useState([])
+  const [chartType,   setChartType]   = useState('line')
+  const [resolution,  setResolution]  = useState('1min')
+  const [histData,    setHistData]    = useState([])
+  const [histPeriod,  setHistPeriod]  = useState('1D')
+  const [histLoading, setHistLoading] = useState(false)
+  const [loadingExp1, setLoadingExp1] = useState(false)
+  const [loadingExp2, setLoadingExp2] = useState(false)
 
-  // Auto load expiries when underlying changes
+  // Compute stats from actual chart data
+  const chartStats = computeStatsFromData(chartData)
+
   useEffect(() => { loadExp1() }, [und1])
   useEffect(() => { loadExp2() }, [und2])
   useEffect(() => { setStrike1(ATM_DEFAULTS[und1] || 25000) }, [und1])
@@ -90,10 +83,8 @@ export default function SpreadAnalysisPage() {
     if (!exp1?.code || !exp2?.code) { alert('Please wait for expiries to load'); return }
     setLoading(true)
     setChartData([])
-    setChartStats(null)
     try {
-      // Fetch history for spread: Leg2 - Leg1
-      // We pass leg2 as leg1 and leg1 as leg2 with ratio=1 since formula is Leg2-Leg1
+      // Spread = Leg2 - Leg1 (ratio=1)
       const rowDef = {
         exchange1: ex2, underlying1: und2, expiry_code1: exp2.code,
         strike1: strike2, type1: type2,
@@ -103,12 +94,6 @@ export default function SpreadAnalysisPage() {
       }
       const result = await fetchSpreadHistory(rowDef, tradeDate, '1', authHeader)
       setChartData(result.data || [])
-      setChartStats(result.stats || null)
-
-      // Get current LTPs from stats
-      if (result.stats) {
-        setLtp2(result.stats.current)
-      }
     } catch (err) {
       console.error(err)
       alert('Failed to fetch data')
@@ -139,7 +124,6 @@ export default function SpreadAnalysisPage() {
 
   return (
     <div className="p-6">
-      {/* Header */}
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-bright tracking-tight">Spread Analysis</h1>
         <p className="text-sm text-ink mt-1">Formula: Leg 2 − Leg 1</p>
@@ -254,14 +238,14 @@ export default function SpreadAnalysisPage() {
             className="bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan" />
           <button onClick={handleFetch} disabled={loading}
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan text-void font-bold text-sm hover:bg-cyan/90 transition-all disabled:opacity-50">
-            {loading
-              ? <><svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Fetching...</>
-              : <>Fetch Spread Data</>}
+            {loading ? (
+              <><svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>Fetching...</>
+            ) : 'Fetch Spread Data'}
           </button>
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats — computed from actual chart data */}
       {chartStats && (
         <div className="grid grid-cols-4 gap-3 mb-4">
           {[
