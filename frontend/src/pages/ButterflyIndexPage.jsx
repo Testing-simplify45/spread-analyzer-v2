@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAuthStore } from '../hooks/useAuthStore'
 import { getExpiries } from '../utils/api'
 import SpreadChart, { HistoricalChart } from '../components/SpreadChart'
+import { computeStatsFromData } from '../utils/computeStats'
 import axios from 'axios'
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api'
@@ -15,11 +16,11 @@ export default function ButterflyIndexPage() {
   const { getAuthHeader } = useAuthStore()
   const authHeader = getAuthHeader()
 
-  const [exchange,   setExchange]  = useState('NSE')
-  const [expList,    setExpList]   = useState([])
-  const [loadingExp, setLoadingExp]= useState(false)
-  const [type,       setType]      = useState('CE')
-  const [tradeDate,  setTradeDate] = useState(new Date().toISOString().split('T')[0])
+  const [exchange,   setExchange]   = useState('NSE')
+  const [expList,    setExpList]    = useState([])
+  const [loadingExp, setLoadingExp] = useState(false)
+  const [type,       setType]       = useState('CE')
+  const [tradeDate,  setTradeDate]  = useState(new Date().toISOString().split('T')[0])
 
   const [exp1,    setExp1]    = useState(null)
   const [strike1, setStrike1] = useState(23300)
@@ -30,12 +31,14 @@ export default function ButterflyIndexPage() {
 
   const [loading,    setLoading]    = useState(false)
   const [chartData,  setChartData]  = useState([])
-  const [chartStats, setChartStats] = useState(null)
   const [chartType,  setChartType]  = useState('line')
   const [resolution, setResolution] = useState('1min')
   const [histData,   setHistData]   = useState([])
   const [histPeriod, setHistPeriod] = useState('1D')
   const [histLoading,setHistLoading]= useState(false)
+
+  // Compute stats from actual chart data
+  const chartStats = computeStatsFromData(chartData)
 
   useEffect(() => { loadExpiries() }, [exchange])
 
@@ -44,36 +47,24 @@ export default function ButterflyIndexPage() {
     try {
       const list = await getExpiries('NIFTY', authHeader)
       setExpList(list || [])
-      if (list?.length) {
-        setExp1(list[0])
-        setExp2(list[0])
-        setExp3(list[0])
-      }
+      if (list?.length) { setExp1(list[0]); setExp2(list[0]); setExp3(list[0]) }
     } catch (e) { console.error(e) }
     finally { setLoadingExp(false) }
   }
 
   const handleFetch = useCallback(async () => {
-    if (!exp1?.code || !exp2?.code || !exp3?.code) {
-      alert('Please wait for expiries to load')
-      return
-    }
+    if (!exp1?.code || !exp2?.code || !exp3?.code) { alert('Please wait for expiries to load'); return }
     setLoading(true)
     setChartData([])
-    setChartStats(null)
     try {
       const res = await axios.post(`${BASE_URL}/spreads/butterfly-index`, {
-        exchange,
-        underlying: 'NIFTY',
+        exchange, underlying: 'NIFTY',
         exp1: exp1.code, strike1, type,
         exp2: exp2.code, strike2,
         exp3: exp3.code, strike3,
-        trade_date: tradeDate,
-        resolution: '1',
+        trade_date: tradeDate, resolution: '1',
       }, { headers: { Authorization: authHeader } })
-
       setChartData(res.data.data || [])
-      setChartStats(res.data.stats || null)
     } catch (err) {
       console.error(err)
       alert('Failed to fetch butterfly spread data')
@@ -148,7 +139,6 @@ export default function ButterflyIndexPage() {
           </div>
         </div>
 
-        {/* 3 Legs */}
         <div className="grid grid-cols-3 gap-4 mb-5">
           {[
             { label: 'Leg 1', exp: exp1, setExp: setExp1, strike: strike1, setStrike: setStrike1, color: 'bg-blue' },
@@ -174,8 +164,7 @@ export default function ButterflyIndexPage() {
                 </div>
                 <div>
                   <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Strike</label>
-                  <input type="number" value={leg.strike} onChange={e => leg.setStrike(Number(e.target.value))}
-                    step={50}
+                  <input type="number" value={leg.strike} onChange={e => leg.setStrike(Number(e.target.value))} step={50}
                     className="w-full bg-panel border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan" />
                 </div>
               </div>
@@ -191,7 +180,7 @@ export default function ButterflyIndexPage() {
         </button>
       </div>
 
-      {/* Stats */}
+      {/* Stats — computed from actual chart data */}
       {chartStats && (
         <div className="grid grid-cols-4 gap-3 mb-4">
           {[
