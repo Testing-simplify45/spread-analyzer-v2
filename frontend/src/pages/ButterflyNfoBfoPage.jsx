@@ -41,8 +41,8 @@ export default function ButterflyNfoBfoPage() {
   const { getAuthHeader } = useAuthStore()
   const authHeader = getAuthHeader()
 
-  const [leg1Underlying, setLeg1Underlying] = useState('NIFTY')
-  const leg2Underlying = leg1Underlying === 'NIFTY' ? 'SENSEX' : 'NIFTY'
+  const [leg1Underlying, setLeg1Underlying] = useState('SENSEX')
+  const leg2Underlying = leg1Underlying === 'SENSEX' ? 'NIFTY' : 'SENSEX'
   const leg3Underlying = leg1Underlying
   const leg1Exchange   = leg1Underlying === 'NIFTY' ? 'NSE' : 'BSE'
   const leg2Exchange   = leg2Underlying === 'NIFTY' ? 'NSE' : 'BSE'
@@ -61,7 +61,7 @@ export default function ButterflyNfoBfoPage() {
   const [ratio,       setRatio]       = useState(3.3)
   const [multiplier,  setMultiplier]  = useState(3.3)
   const [addon,       setAddon]       = useState(500)
-  const [firstStrike, setFirstStrike] = useState(leg1Underlying === 'NIFTY' ? 23300 : 77000)
+  const [firstStrike, setFirstStrike] = useState(77000)  // SENSEX default
   const [tradeDate,   setTradeDate]   = useState(new Date().toISOString().split('T')[0])
 
   const [rows,         setRows]         = useState([])
@@ -80,7 +80,7 @@ export default function ButterflyNfoBfoPage() {
 
   useEffect(() => { loadExpiries() }, [leg1Underlying])
   useEffect(() => {
-    setFirstStrike(leg1Underlying === 'NIFTY' ? 23300 : 77000)
+    setFirstStrike(leg1Underlying === 'SENSEX' ? 77000 : 23300)
   }, [leg1Underlying])
 
   const loadExpiries = async () => {
@@ -208,7 +208,7 @@ export default function ButterflyNfoBfoPage() {
     <div className="p-6">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-bright tracking-tight">Butterfly Spread — NFO-BFO</h1>
-        <p className="text-sm text-ink mt-1">Formula: (Leg2 − Leg1×Ratio) + (Leg2 − Leg3×Ratio)</p>
+        <p className="text-sm text-ink mt-1">Formula: (Leg1 − Leg2×Ratio) + (Leg3 − Leg2×Ratio)</p>
       </div>
 
       {/* Controls */}
@@ -219,7 +219,7 @@ export default function ButterflyNfoBfoPage() {
             <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Leg 1/3</label>
             <select value={leg1Underlying} onChange={e => setLeg1Underlying(e.target.value)}
               className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan">
-              <option>NIFTY</option><option>SENSEX</option>
+              <option>SENSEX</option><option>NIFTY</option>
             </select>
           </div>
           <div>
