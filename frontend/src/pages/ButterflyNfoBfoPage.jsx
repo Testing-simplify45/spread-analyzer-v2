@@ -139,7 +139,7 @@ export default function ButterflyNfoBfoPage() {
     } finally {
       setLoading(false)
     }
-  }, [strikes, exp1, exp2a, exp2b, exp3, multiplier, type, ratio, tradeDate, authHeader,
+  }, [strikes, exp1, exp2a, exp2b, multiplier, type, ratio, tradeDate, authHeader,
       leg1Exchange, leg1Underlying, leg2Exchange, leg2Underlying, leg3Exchange, leg3Underlying])
 
   const handleRange = useCallback(async () => {
@@ -193,7 +193,7 @@ export default function ButterflyNfoBfoPage() {
       setHistData(frames.reverse())
     } catch (err) { console.error(err) }
     finally { setHistLoading(false) }
-  }, [selectedIdx, rows, histPeriod, exp1, exp2a, exp2b, exp3, multiplier, type, ratio, tradeDate, authHeader,
+  }, [selectedIdx, rows, histPeriod, exp1, exp2a, exp2b, multiplier, type, ratio, tradeDate, authHeader,
       leg1Exchange, leg1Underlying, leg2Exchange, leg2Underlying, leg3Exchange, leg3Underlying])
 
   const expSelect = (list, val, onChange) => (
