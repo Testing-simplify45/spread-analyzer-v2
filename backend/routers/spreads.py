@@ -27,7 +27,7 @@ def _get_fyers(authorization: str):
     return make_fyers(client_id, access_token)
 
 
-# ── Request/Response models ───────────────────────────────────────────────────
+# ── Models ────────────────────────────────────────────────────────────────────
 
 class SpreadRow(BaseModel):
     exchange1:    str
@@ -48,17 +48,12 @@ class BatchSpreadRequest(BaseModel):
     ratio: float = 1.0
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# ── Batch LTP ─────────────────────────────────────────────────────────────────
 
 @router.post("/batch-ltp")
 def batch_ltp(body: BatchSpreadRequest, authorization: str = Header(None)):
-    """
-    Fetch live LTP for multiple spread rows in one batch call.
-    Returns current spread for each row.
-    """
     fyers = _get_fyers(authorization)
 
-    # Build all symbols
     sym1_list = []
     sym2_list = []
     for row in body.rows:
@@ -67,11 +62,9 @@ def batch_ltp(body: BatchSpreadRequest, authorization: str = Header(None)):
         sym2_list.append(build_symbol(row.exchange2, row.underlying2,
                                        row.expiry_code2, row.strike2, row.type2))
 
-    # Single batch API call
     all_syms = sym1_list + sym2_list
     ltp_map  = get_batch_ltp(fyers, all_syms)
 
-    # Compute spreads
     results = []
     for i, row in enumerate(body.rows):
         ltp1    = ltp_map.get(sym1_list[i])
@@ -90,6 +83,8 @@ def batch_ltp(body: BatchSpreadRequest, authorization: str = Header(None)):
     return {"results": results}
 
 
+# ── Spread history ────────────────────────────────────────────────────────────
+
 @router.post("/history")
 def get_spread_history(
     body: SpreadRow,
@@ -97,10 +92,6 @@ def get_spread_history(
     resolution: str = Query(default="1"),
     authorization: str = Header(None),
 ):
-    """
-    Get spread history for a single row on a given date.
-    Returns list of {timestamp, spread, spread_high, spread_low} dicts.
-    """
     fyers = _get_fyers(authorization)
 
     if not trade_date:
@@ -119,8 +110,6 @@ def get_spread_history(
         return {"data": [], "stats": {}, "symbols": {"sym1": sym1, "sym2": sym2}}
 
     stats = compute_day_stats(df)
-
-    # Convert to JSON-serializable list
     df["timestamp"] = df["timestamp"].astype(str)
     records = df[["timestamp","spread","spread_high","spread_low",
                    "leg1_price","leg2_price"]].to_dict("records")
@@ -132,6 +121,8 @@ def get_spread_history(
     }
 
 
+# ── Multi-day history ─────────────────────────────────────────────────────────
+
 @router.post("/multi-day-history")
 def get_multi_day_history(
     body: SpreadRow,
@@ -139,10 +130,6 @@ def get_multi_day_history(
     resolution: str = Query(default="1"),
     authorization: str = Header(None),
 ):
-    """
-    Get spread history across multiple trading days.
-    days: 1, 5, 22 (1M), 130 (6M)
-    """
     fyers = _get_fyers(authorization)
 
     sym1 = build_symbol(body.exchange1, body.underlying1,
@@ -155,7 +142,7 @@ def get_multi_day_history(
     collected = 0
 
     while collected < days:
-        if d.weekday() < 5:  # Skip weekends
+        if d.weekday() < 5:
             df = compute_spread_series(fyers, sym1, sym2, d, body.ratio, resolution)
             if not df.empty:
                 df["date"] = str(d)
@@ -177,28 +164,27 @@ def get_multi_day_history(
     }
 
 
-# ── Butterfly Index endpoint ──────────────────────────────────────────────────
+# ── Butterfly Index ───────────────────────────────────────────────────────────
 
 class ButterflyIndexRequest(BaseModel):
-    exchange:    str
-    underlying:  str
-    exp1:        str
-    strike1:     int
-    exp2:        str
-    strike2:     int
-    exp3:        str
-    strike3:     int
-    type:        str
-    trade_date:  str
-    resolution:  str = "1"
+    exchange:   str
+    underlying: str
+    exp1:       str
+    strike1:    int
+    exp2:       str
+    strike2:    int
+    exp3:       str
+    strike3:    int
+    type:       str
+    trade_date: str
+    resolution: str = "1"
 
 
 @router.post("/butterfly-index")
 def butterfly_index(body: ButterflyIndexRequest, authorization: str = Header(None)):
     """
     Butterfly Index spread.
-    Formula: (Leg3 - Leg2) - (Leg2 - Leg1)
-           = Leg1 - 2*Leg2 + Leg3
+    Formula: (Leg3 - Leg2) - (Leg2 - Leg1) = Leg1 - 2*Leg2 + Leg3
     """
     fyers = _get_fyers(authorization)
     d     = date.fromisoformat(body.trade_date)
@@ -220,10 +206,10 @@ def butterfly_index(body: ButterflyIndexRequest, authorization: str = Header(Non
         return {"data": [], "stats": {}}
 
     result = pd.DataFrame({
-        "timestamp":   common,
-        "leg1_price":  df1.loc[common, "close"].values,
-        "leg2_price":  df2.loc[common, "close"].values,
-        "leg3_price":  df3.loc[common, "close"].values,
+        "timestamp": common,
+        "leg1_price": df1.loc[common, "close"].values,
+        "leg2_price": df2.loc[common, "close"].values,
+        "leg3_price": df3.loc[common, "close"].values,
     })
 
     # Formula: (Leg3 - Leg2) - (Leg2 - Leg1)
@@ -231,7 +217,6 @@ def butterfly_index(body: ButterflyIndexRequest, authorization: str = Header(Non
     result["spread_high"] = (df3.loc[common, "high"].values  - df2.loc[common, "low"].values)  - (df2.loc[common, "low"].values  - df1.loc[common, "high"].values)
     result["spread_low"]  = (df3.loc[common, "low"].values   - df2.loc[common, "high"].values) - (df2.loc[common, "high"].values - df1.loc[common, "low"].values)
 
-    from services.fyers_service import compute_day_stats
     stats = compute_day_stats(result)
     result["timestamp"] = result["timestamp"].astype(str)
     records = result[["timestamp", "spread", "spread_high", "spread_low"]].to_dict("records")
@@ -239,7 +224,7 @@ def butterfly_index(body: ButterflyIndexRequest, authorization: str = Header(Non
     return {"data": records, "stats": stats}
 
 
-# ── Butterfly NFO-BFO endpoint ────────────────────────────────────────────────
+# ── Butterfly NFO-BFO ─────────────────────────────────────────────────────────
 
 class ButterflyNfoBfoRequest(BaseModel):
     leg1_exchange:    str
@@ -268,7 +253,10 @@ class ButterflyNfoBfoRequest(BaseModel):
 def butterfly_nfobfo(body: ButterflyNfoBfoRequest, authorization: str = Header(None)):
     """
     Butterfly NFO-BFO spread.
-    Formula: (Leg2a - Leg1*Ratio) + (Leg2b - Leg3*Ratio)
+    Formula: (Leg1 - Leg2a*Ratio) + (Leg3 - Leg2b*Ratio)
+    Leg1 = Leg3 = SENSEX (same expiry, same strike)
+    Leg2a = NIFTY far expiry
+    Leg2b = NIFTY near expiry
     """
     fyers = _get_fyers(authorization)
     d     = date.fromisoformat(body.trade_date)
@@ -276,39 +264,46 @@ def butterfly_nfobfo(body: ButterflyNfoBfoRequest, authorization: str = Header(N
     sym1  = build_symbol(body.leg1_exchange,  body.leg1_underlying,  body.leg1_expiry,  body.leg1_strike,  body.option_type)
     sym2a = build_symbol(body.leg2a_exchange, body.leg2a_underlying, body.leg2a_expiry, body.leg2a_strike, body.option_type)
     sym2b = build_symbol(body.leg2b_exchange, body.leg2b_underlying, body.leg2b_expiry, body.leg2b_strike, body.option_type)
-    sym3  = build_symbol(body.leg3_exchange,  body.leg3_underlying,  body.leg3_expiry,  body.leg3_strike,  body.option_type)
+    # sym3 is same as sym1 since Leg3 = Leg1 (same SENSEX expiry + strike)
 
     from services.fyers_service import get_candles
     df1  = get_candles(fyers, sym1,  d, body.resolution)
     df2a = get_candles(fyers, sym2a, d, body.resolution)
     df2b = get_candles(fyers, sym2b, d, body.resolution)
-    df3  = get_candles(fyers, sym3,  d, body.resolution)
 
-    if df1.empty or df2a.empty or df2b.empty or df3.empty:
+    if df1.empty or df2a.empty or df2b.empty:
         return {"data": [], "stats": {}}
 
-    common = df1.index.intersection(df2a.index).intersection(df2b.index).intersection(df3.index)
-    if common.empty:
+    # Align all dataframes to df1's index using nearest timestamp
+    # This handles minor tick differences between BSE and NSE
+    df2a_aligned = df2a.reindex(df1.index, method='nearest', tolerance=pd.Timedelta('2min'))
+    df2b_aligned = df2b.reindex(df1.index, method='nearest', tolerance=pd.Timedelta('2min'))
+
+    # Drop rows where any leg has no data
+    valid_mask = (
+        df1["close"].notna() &
+        df2a_aligned["close"].notna() &
+        df2b_aligned["close"].notna()
+    )
+    df1_v   = df1[valid_mask]
+    df2a_v  = df2a_aligned[valid_mask]
+    df2b_v  = df2b_aligned[valid_mask]
+
+    if df1_v.empty:
         return {"data": [], "stats": {}}
 
     r = body.ratio
-    result = pd.DataFrame({"timestamp": common})
+    result = pd.DataFrame({"timestamp": df1_v.index})
 
-    # Formula: (Leg2a - Leg1*ratio) + (Leg2b - Leg3*ratio)
-    result["spread"] = (
-        (df2a.loc[common, "close"].values - df1.loc[common, "close"].values * r) +
-        (df2b.loc[common, "close"].values - df3.loc[common, "close"].values * r)
-    )
-    result["spread_high"] = (
-        (df2a.loc[common, "high"].values - df1.loc[common, "low"].values * r) +
-        (df2b.loc[common, "high"].values - df3.loc[common, "low"].values * r)
-    )
-    result["spread_low"] = (
-        (df2a.loc[common, "low"].values - df1.loc[common, "high"].values * r) +
-        (df2b.loc[common, "low"].values - df3.loc[common, "high"].values * r)
-    )
+    leg1_close  = df1_v["close"].values
+    leg2a_close = df2a_v["close"].values
+    leg2b_close = df2b_v["close"].values
 
-    from services.fyers_service import compute_day_stats
+    # Formula: (Leg1 - Leg2a*ratio) + (Leg1 - Leg2b*ratio)
+    result["spread"]      = (leg1_close - leg2a_close * r) + (leg1_close - leg2b_close * r)
+    result["spread_high"] = (df1_v["high"].values - df2a_v["low"].values * r) + (df1_v["high"].values - df2b_v["low"].values * r)
+    result["spread_low"]  = (df1_v["low"].values  - df2a_v["high"].values * r) + (df1_v["low"].values  - df2b_v["high"].values * r)
+
     stats = compute_day_stats(result)
     result["timestamp"] = result["timestamp"].astype(str)
     records = result[["timestamp", "spread", "spread_high", "spread_low"]].to_dict("records")
