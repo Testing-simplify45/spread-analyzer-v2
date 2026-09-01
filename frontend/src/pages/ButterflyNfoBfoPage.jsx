@@ -52,10 +52,9 @@ export default function ButterflyNfoBfoPage() {
   const [leg2ExpList, setLeg2ExpList] = useState([])
   const [loadingExp,  setLoadingExp]  = useState(false)
 
-  const [exp1,        setExp1]        = useState(null)
-  const [exp2a,       setExp2a]       = useState(null)
-  const [exp2b,       setExp2b]       = useState(null)
-  const [exp3,        setExp3]        = useState(null)
+  const [exp1,        setExp1]        = useState(null)  // SENSEX expiry (shared for Leg1 & Leg3)
+  const [exp2a,       setExp2a]       = useState(null)  // NIFTY far expiry
+  const [exp2b,       setExp2b]       = useState(null)  // NIFTY near expiry
 
   const [type,        setType]        = useState('CE')
   const [ratio,       setRatio]       = useState(3.3)
@@ -92,7 +91,7 @@ export default function ButterflyNfoBfoPage() {
       ])
       setLeg1ExpList(e1 || [])
       setLeg2ExpList(e2 || [])
-      if (e1?.length) { setExp1(e1[0]); setExp3(e1[0]) }
+      if (e1?.length) { setExp1(e1[0]) }
       if (e2?.length) { setExp2a(e2[0]); setExp2b(e2[0]) }
     } catch (e) { console.error(e) }
     finally { setLoadingExp(false) }
@@ -106,12 +105,13 @@ export default function ButterflyNfoBfoPage() {
     leg2b_exchange: leg2Exchange, leg2b_underlying: leg2Underlying,
     leg2b_expiry: exp2b?.code, leg2b_strike: roundTo50(stk1 / multiplier),
     leg3_exchange: leg3Exchange, leg3_underlying: leg3Underlying,
-    leg3_expiry: exp3?.code, leg3_strike: stk1,
+    leg3_expiry: exp1?.code,  // ← Same SENSEX expiry as Leg1!
+    leg3_strike: stk1,
     option_type: type, ratio,
   })
 
   const handleFetch = useCallback(async () => {
-    if (!exp1?.code || !exp2a?.code || !exp2b?.code || !exp3?.code) {
+    if (!exp1?.code || !exp2a?.code || !exp2b?.code) {
       alert('Please wait for expiries to load'); return
     }
     setLoading(true)
@@ -162,7 +162,7 @@ export default function ButterflyNfoBfoPage() {
       setRows(updated)
     } catch (err) { console.error(err) }
     finally { setRangeLoading(false) }
-  }, [rows, exp1, exp2a, exp2b, exp3, multiplier, type, ratio, tradeDate, authHeader,
+  }, [rows, exp1, exp2a, exp2b, multiplier, type, ratio, tradeDate, authHeader,
       leg1Exchange, leg1Underlying, leg2Exchange, leg2Underlying, leg3Exchange, leg3Underlying])
 
   const handleViewChart = useCallback((idx) => {
@@ -252,37 +252,34 @@ export default function ButterflyNfoBfoPage() {
         </div>
 
         {/* Expiries */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+        <div className="grid grid-cols-3 gap-3 mb-4">
           <div>
             <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 flex items-center gap-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-blue" />Leg 1 Expiry {loadingExp && <span className="text-cyan">...</span>}
+              <div className="w-1.5 h-1.5 rounded-full bg-blue" />
+              {leg1Underlying} Expiry (Leg 1 &amp; 3) {loadingExp && <span className="text-cyan">...</span>}
             </label>
             {expSelect(leg1ExpList, exp1, setExp1)}
           </div>
           <div>
             <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 flex items-center gap-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-cyan" />Leg 2 Expiry (S1)
+              <div className="w-1.5 h-1.5 rounded-full bg-cyan" />
+              {leg2Underlying} Far Expiry (Leg 2a)
             </label>
             {expSelect(leg2ExpList, exp2a, setExp2a)}
           </div>
           <div>
             <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 flex items-center gap-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-cyan" />Leg 2 Expiry (S2)
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald" />
+              {leg2Underlying} Near Expiry (Leg 2b)
             </label>
             {expSelect(leg2ExpList, exp2b, setExp2b)}
           </div>
-          <div>
-            <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 flex items-center gap-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald" />Leg 3 Expiry
-            </label>
-            {expSelect(leg1ExpList, exp3, setExp3)}
-          </div>
-          <div>
-            <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Date</label>
-            <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)}
-              max={new Date().toISOString().split('T')[0]}
-              className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan" />
-          </div>
+        </div>
+        <div className="mb-4 w-48">
+          <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Date</label>
+          <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)}
+            max={new Date().toISOString().split('T')[0]}
+            className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan" />
         </div>
 
         <div className="flex items-center gap-3">
