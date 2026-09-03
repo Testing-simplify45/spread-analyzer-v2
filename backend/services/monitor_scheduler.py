@@ -9,7 +9,7 @@ Runs even when browser is closed.
 import os
 import threading
 import time
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from typing import Optional
 import pandas as pd
 
@@ -256,26 +256,52 @@ def run_monitor_cycle():
             print(f"[Monitor] Section error: {e}")
 
 
+def is_market_hours() -> bool:
+    """Check if current time is within NSE market hours (9:15 AM - 3:30 PM IST, Mon-Fri)."""
+    from datetime import timezone
+    import zoneinfo
+    try:
+        ist = zoneinfo.ZoneInfo("Asia/Kolkata")
+    except Exception:
+        # Fallback: IST = UTC + 5:30
+        from datetime import timezone, timedelta as td
+        ist = timezone(td(hours=5, minutes=30))
+    now = datetime.now(ist)
+    if now.weekday() >= 5:  # Saturday or Sunday
+        return False
+    market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return market_open <= now <= market_close
+
+
 def _scheduler_loop():
     """Background loop — runs every 30 seconds."""
     print("[Monitor] Scheduler started!")
-    send_telegram("🟢 <b>Option Spread Analyzer</b>\nMonitor scheduler started!\n⏰ " + 
-                  datetime.now().strftime('%H:%M:%S'))
-    
-    cycle_count = 0
+    send_telegram(
+        "🟢 <b>Option Spread Analyzer</b>\n"
+        "Monitor scheduler started!\n"
+        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+    )
+
+    last_heartbeat = time.time()
+    HEARTBEAT_INTERVAL = 15 * 60  # 15 minutes in seconds
+
     while True:
         try:
-            run_monitor_cycle()
-            cycle_count += 1
-            
-            # Send heartbeat every 15 minutes (30 cycles × 30 seconds = 15 minutes)
-            if cycle_count % 30 == 0:
-                send_telegram(
-                    f"💚 <b>Monitor Active</b>\n"
-                    f"Scheduler running normally\n"
-                    f"Cycles completed: {cycle_count}\n"
-                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-                )
+            if is_market_hours():
+                run_monitor_cycle()
+
+                # Send heartbeat every 15 minutes
+                now = time.time()
+                if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                    send_telegram(
+                        f"💚 <b>Monitor Active</b>\n"
+                        f"Scheduler running normally\n"
+                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                    )
+                    last_heartbeat = now
+            else:
+                print(f"[Monitor] Outside market hours — skipping cycle")
         except Exception as e:
             print(f"[Monitor] Cycle error: {e}")
         time.sleep(30)
