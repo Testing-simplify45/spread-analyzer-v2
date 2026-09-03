@@ -8,6 +8,41 @@ const BASE_URL = import.meta.env.VITE_API_URL || '/api'
 const INDEXES = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'BANKEX', 'FINNIFTY', 'MIDCPNIFTY']
 const EXCHANGE_MAP = { NIFTY: 'NSE', BANKNIFTY: 'NSE', FINNIFTY: 'NSE', MIDCPNIFTY: 'NSE', SENSEX: 'BSE', BANKEX: 'BSE' }
 
+const STRATEGIES = [
+  { value: 'index_p1',    label: 'Index Pair Part 1 (Calendar)' },
+  { value: 'index_p2',    label: 'Index Pair Part 2 (Interval)' },
+  { value: 'nfo_bfo',     label: 'NFO/BFO Spread' },
+  { value: 'butterfly_index', label: 'Butterfly Index' },
+  { value: 'butterfly_nfo',   label: 'Butterfly NFO/BFO' },
+]
+
+// ── Formula helpers ───────────────────────────────────────────────────────────
+function computeSpread(strategy, ltp1, ltp2, ltp3, ratio, multiplier) {
+  const r = ratio || 1
+  const m = multiplier || 3.3
+  if (ltp1 == null) return null
+
+  switch (strategy) {
+    case 'index_p1':
+    case 'index_p2':
+      if (ltp2 == null) return null
+      return round2(ltp1 - (ltp2 * r))
+    case 'nfo_bfo':
+      if (ltp2 == null) return null
+      return round2(ltp1 - (ltp2 * m * r))
+    case 'butterfly_index':
+      if (ltp2 == null || ltp3 == null) return null
+      return round2(ltp1 - (ltp2 * r) - (ltp2 * r) + ltp3)
+    case 'butterfly_nfo':
+      if (ltp2 == null || ltp3 == null) return null
+      return round2(ltp1 - (ltp2 * m * r) - (ltp2 * m * r) + ltp3)
+    default:
+      return null
+  }
+}
+
+function round2(v) { return Math.round(v * 100) / 100 }
+
 function fmtVal(v) {
   if (v == null) return '—'
   return (v > 0 ? '+' : '') + v.toFixed(2)
@@ -16,19 +51,42 @@ function valColor(v) {
   if (v == null) return 'text-ink'
   return v > 0 ? 'text-emerald' : v < 0 ? 'text-crimson' : 'text-ink'
 }
-function statusBadge(current, d3High, d3Low) {
-  if (current == null || d3High == null || d3Low == null) return null
-  if (current >= d3High - 1) return { label: 'Near 3D High', color: 'bg-amber-500/20 text-amber-400 border-amber-500/30' }
-  if (current >= d3High + 5) return { label: 'Above 3D High', color: 'bg-crimson/20 text-crimson border-crimson/30' }
-  if (current <= d3Low + 1)  return { label: 'Near 3D Low',  color: 'bg-amber-500/20 text-amber-400 border-amber-500/30' }
-  if (current <= d3Low - 5)  return { label: 'Below 3D Low', color: 'bg-crimson/20 text-crimson border-crimson/30' }
-  return null
+function statusBadge(current, d3High, d3Low, prevClose) {
+  const badges = []
+  if (current != null && d3High != null && d3Low != null) {
+    if (current >= d3High - 1) badges.push({ label: 'Near 3D High', color: 'bg-amber-500/20 text-amber-400 border-amber-500/30' })
+    if (current >= d3High + 5) badges.push({ label: 'Above 3D High', color: 'bg-crimson/20 text-crimson border-crimson/30' })
+    if (current <= d3Low + 1)  badges.push({ label: 'Near 3D Low',  color: 'bg-amber-500/20 text-amber-400 border-amber-500/30' })
+    if (current <= d3Low - 5)  badges.push({ label: 'Below 3D Low', color: 'bg-crimson/20 text-crimson border-crimson/30' })
+  }
+  if (current != null && prevClose != null) {
+    if (current >= prevClose + 10) badges.push({ label: `PC +${(current - prevClose).toFixed(1)}`, color: 'bg-blue/20 text-blue border-blue/30' })
+    if (current <= prevClose - 10) badges.push({ label: `PC -${(prevClose - current).toFixed(1)}`, color: 'bg-purple-400/20 text-purple-400 border-purple-400/30' })
+  }
+  return badges
 }
 
-// Single section component — wrapped in forwardRef so parent can call handleStart/fetchRange
+// ── Strike generator ──────────────────────────────────────────────────────────
+function generateStrikes(strategy, atm, addon, interval) {
+  if (strategy === 'index_p1' || strategy === 'index_p2') {
+    // ATM + 3 OTM for CE, ATM - 3 OTM for PE (returned as one list, split in table)
+    return {
+      ce: [atm, atm + addon, atm + 2*addon, atm + 3*addon],
+      pe: [atm, atm - addon, atm - 2*addon, atm - 3*addon],
+    }
+  }
+  // All other spreads: ATM + 5 strikes
+  return {
+    ce: [atm, atm + addon, atm + 2*addon, atm + 3*addon, atm + 4*addon, atm + 5*addon],
+    pe: [atm, atm - addon, atm - 2*addon, atm - 3*addon, atm - 4*addon, atm - 5*addon],
+  }
+}
+
+// ── Section component ─────────────────────────────────────────────────────────
 const MonitorSection = forwardRef(function MonitorSection({ section, authHeader, onUpdate, onRemove }, ref) {
   const [expList,      setExpList]      = useState([])
-  const [strikes,      setStrikes]      = useState([])
+  const [ceStrikes,    setCeStrikes]    = useState([])
+  const [peStrikes,    setPeStrikes]    = useState([])
   const [atm,          setAtm]          = useState(null)
   const [ceData,       setCeData]       = useState([])
   const [peData,       setPeData]       = useState([])
@@ -42,7 +100,15 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
   const [prevClose,    setPrevClose]    = useState({})
   const intervalRef = useRef(null)
 
-  const exchange = EXCHANGE_MAP[section.index] || 'NSE'
+  const strategy   = section.strategy   || 'index_p1'
+  const exchange   = EXCHANGE_MAP[section.index] || 'NSE'
+  const ratio      = section.ratio      ?? 1
+  const multiplier = section.multiplier ?? 3.3
+  const interval   = section.interval   ?? 100
+
+  const isButterfly = strategy === 'butterfly_index' || strategy === 'butterfly_nfo'
+  const isIndexP2   = strategy === 'index_p2'
+  const isNfoBfo    = strategy === 'nfo_bfo'
 
   useEffect(() => { loadExpiries() }, [section.index])
 
@@ -53,28 +119,38 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
     } catch (e) { console.error(e) }
   }
 
-  const fetchAtm = useCallback(async () => {
+  // Fetch ATM and compute strikes
+  const fetchAtmAndStrikes = useCallback(async () => {
     setLoadingAtm(true)
     try {
       const res = await axios.get(`${BASE_URL}/monitor/atm/${section.index}`, {
-        params: { addon: section.addon },
+        params: { addon: section.addon, strategy, interval },
         headers: { Authorization: authHeader }
       })
-      setAtm(res.data.atm)
-      setStrikes(res.data.strikes)
-    } catch (e) { console.error(e) }
+      const atmVal = res.data.atm
+      setAtm(atmVal)
+      const { ce, pe } = generateStrikes(strategy, atmVal, section.addon, interval)
+      setCeStrikes(ce)
+      setPeStrikes(pe)
+      return { atm: atmVal, ce, pe }
+    } catch (e) { console.error(e); return null }
     finally { setLoadingAtm(false) }
-  }, [section.index, section.addon, authHeader])
+  }, [section.index, section.addon, strategy, interval, authHeader])
 
-  const fetchLive = useCallback(async (strikesToUse) => {
-    const s = strikesToUse || strikes
-    if (!s.length || !section.exp1 || !section.exp2) return
+  // Fetch live spreads
+  const fetchLive = useCallback(async (ceS, peS) => {
+    const ce = ceS || ceStrikes
+    const pe = peS || peStrikes
+    if ((!ce.length && !pe.length) || !section.exp1 || !section.exp2) return
     setLoadingLive(true)
     try {
       const res = await axios.post(`${BASE_URL}/monitor/live`, {
         exchange, index: section.index,
         exp1: section.exp1, exp2: section.exp2,
-        addon: section.addon, strikes: s,
+        exp3: section.exp3 || '',
+        addon: section.addon,
+        ce_strikes: ce, pe_strikes: pe,
+        strategy, ratio, multiplier, interval,
       }, { headers: { Authorization: authHeader } })
 
       const mergeData = (rows, type) => rows.map(row => ({
@@ -94,36 +170,47 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
       setRefreshCount(c => c + 1)
     } catch (e) { console.error(e) }
     finally { setLoadingLive(false) }
-  }, [strikes, section, exchange, authHeader, prevClose, d3Ranges, d5Ranges])
+  }, [ceStrikes, peStrikes, section, exchange, authHeader, prevClose, d3Ranges, d5Ranges, strategy, ratio, multiplier, interval])
 
-  const fetchPrevClose = useCallback(async (strikesToUse) => {
-    const s = strikesToUse || strikes
-    if (!s.length || !section.exp1 || !section.exp2) return
+  // Fetch prev close
+  const fetchPrevClose = useCallback(async (ceS, peS) => {
+    const ce = ceS || ceStrikes
+    const pe = peS || peStrikes
+    if ((!ce.length && !pe.length) || !section.exp1 || !section.exp2) return
     try {
       const res = await axios.post(`${BASE_URL}/monitor/prev-close`, {
         exchange, index: section.index,
         exp1: section.exp1, exp2: section.exp2,
-        addon: section.addon, strikes: s,
+        exp3: section.exp3 || '',
+        addon: section.addon,
+        ce_strikes: ce, pe_strikes: pe,
+        strategy, ratio, multiplier,
       }, { headers: { Authorization: authHeader } })
       setPrevClose(res.data.prev_close || {})
     } catch (e) { console.error(e) }
-  }, [strikes, section, exchange, authHeader])
+  }, [ceStrikes, peStrikes, section, exchange, authHeader, strategy, ratio, multiplier])
 
-  const fetchRange = useCallback(async (strikesToUse) => {
-    const s = strikesToUse || strikes
-    if (!s.length || !section.exp1 || !section.exp2) return
+  // Fetch 3D/5D ranges
+  const fetchRange = useCallback(async (ceS, peS) => {
+    const ce = ceS || ceStrikes
+    const pe = peS || peStrikes
+    if ((!ce.length && !pe.length) || !section.exp1 || !section.exp2) return
     setLoadingRange(true)
     try {
       const [r3, r5] = await Promise.all([
         axios.post(`${BASE_URL}/monitor/range`, {
           exchange, index: section.index,
           exp1: section.exp1, exp2: section.exp2,
-          strikes: s, days: 3,
+          exp3: section.exp3 || '',
+          ce_strikes: ce, pe_strikes: pe,
+          strategy, ratio, multiplier, days: 3,
         }, { headers: { Authorization: authHeader } }),
         axios.post(`${BASE_URL}/monitor/range`, {
           exchange, index: section.index,
           exp1: section.exp1, exp2: section.exp2,
-          strikes: s, days: 5,
+          exp3: section.exp3 || '',
+          ce_strikes: ce, pe_strikes: pe,
+          strategy, ratio, multiplier, days: 5,
         }, { headers: { Authorization: authHeader } }),
       ])
       const d3 = r3.data.ranges || {}
@@ -133,24 +220,21 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
       onUpdate({ ...section, d3_ranges: d3 })
     } catch (e) { console.error(e) }
     finally { setLoadingRange(false) }
-  }, [strikes, section, exchange, authHeader, onUpdate])
+  }, [ceStrikes, peStrikes, section, exchange, authHeader, strategy, ratio, multiplier, onUpdate])
 
+  // Start monitoring
   const handleStart = useCallback(async () => {
     if (!section.exp1 || !section.exp2) { alert('Please select both expiries'); return }
-    await fetchAtm()
-    const res = await axios.get(`${BASE_URL}/monitor/atm/${section.index}`, {
-      params: { addon: section.addon },
-      headers: { Authorization: authHeader }
-    })
-    const s = res.data.strikes
-    setStrikes(s)
-    await fetchPrevClose(s)
-    await fetchLive(s)
+    if (isButterfly && !section.exp3) { alert('Please select Exp3 for butterfly'); return }
+    const result = await fetchAtmAndStrikes()
+    if (!result) return
+    const { ce, pe } = result
+    await fetchPrevClose(ce, pe)
+    await fetchLive(ce, pe)
     if (intervalRef.current) clearInterval(intervalRef.current)
-    intervalRef.current = setInterval(() => fetchLive(s), 30000)
-  }, [section, authHeader, fetchAtm, fetchPrevClose, fetchLive])
+    intervalRef.current = setInterval(() => fetchLive(ce, pe), 30000)
+  }, [section, isButterfly, fetchAtmAndStrikes, fetchPrevClose, fetchLive])
 
-  // Expose handleStart and fetchRange to parent via ref
   useImperativeHandle(ref, () => ({
     handleStart,
     fetchRange: () => fetchRange(),
@@ -179,13 +263,13 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
             {data.length === 0 ? (
               <tr><td colSpan={9} className="text-center py-4 text-ink font-mono text-xs">Click Start Monitor</td></tr>
             ) : data.map((row, i) => {
-              const badge = statusBadge(row.current, row.d3_high, row.d3_low)
-              const isAtm = row.strike === atm
+              const badges = statusBadge(row.current, row.d3_high, row.d3_low, row.prev_close)
+              const isAtmRow = row.strike === atm
               return (
-                <tr key={i} className={`border-b border-edge/30 hover:bg-panelLight/30 transition-colors ${isAtm ? 'bg-cyan/5' : ''}`}>
+                <tr key={i} className={`border-b border-edge/30 hover:bg-panelLight/30 transition-colors ${isAtmRow ? 'bg-cyan/5' : ''}`}>
                   <td className="py-2 px-3 font-mono font-bold text-bright">
                     {row.strike}
-                    {isAtm && <span className="ml-1 text-[9px] text-cyan font-normal">ATM</span>}
+                    {isAtmRow && <span className="ml-1 text-[9px] text-cyan font-normal">ATM</span>}
                   </td>
                   <td className="py-2 px-3 font-mono text-ink">{fmtVal(row.prev_close)}</td>
                   <td className={`py-2 px-3 font-mono font-semibold ${valColor(row.current)}`}>{fmtVal(row.current)}</td>
@@ -195,11 +279,13 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
                   <td className="py-2 px-3 font-mono text-emerald/50">{fmtVal(row.d5_high)}</td>
                   <td className="py-2 px-3 font-mono text-crimson/50">{fmtVal(row.d5_low)}</td>
                   <td className="py-2 px-3">
-                    {badge && (
-                      <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-semibold border ${badge.color}`}>
-                        {badge.label}
-                      </span>
-                    )}
+                    <div className="flex flex-wrap gap-1">
+                      {badges.map((b, bi) => (
+                        <span key={bi} className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-semibold border ${b.color}`}>
+                          {b.label}
+                        </span>
+                      ))}
+                    </div>
                   </td>
                 </tr>
               )
@@ -212,12 +298,12 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
 
   return (
     <div className="bg-panel border border-edge rounded-2xl p-5 mb-4">
-      {/* Section header */}
+      {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-cyan animate-pulse" />
           <span className="text-sm font-bold text-bright font-mono">
-            {section.index} · {section.exp1_label || section.exp1} → {section.exp2_label || section.exp2}
+            {STRATEGIES.find(s => s.value === strategy)?.label} · {section.index}
           </span>
           {atm && <span className="text-[10px] font-mono text-cyan bg-cyan/10 px-2 py-0.5 rounded-full">ATM: {atm}</span>}
         </div>
@@ -227,12 +313,20 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
         </button>
       </div>
 
-      {/* Controls */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+      {/* Controls Row 1: Strategy + Index + Expiries */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+        <div>
+          <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Strategy</label>
+          <select value={strategy}
+            onChange={e => onUpdate({ ...section, strategy: e.target.value, exp3: '' })}
+            className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan">
+            {STRATEGIES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
+        </div>
         <div>
           <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Index</label>
           <select value={section.index}
-            onChange={e => onUpdate({ ...section, index: e.target.value, exp1: '', exp2: '', exp1_label: '', exp2_label: '' })}
+            onChange={e => onUpdate({ ...section, index: e.target.value, exp1: '', exp2: '', exp3: '', exp1_label: '', exp2_label: '', exp3_label: '' })}
             className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan">
             {INDEXES.map(i => <option key={i}>{i}</option>)}
           </select>
@@ -261,6 +355,33 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
             {expList.map(e => <option key={e.code} value={e.code}>{e.label}</option>)}
           </select>
         </div>
+      </div>
+
+      {/* Controls Row 2: Exp3 (butterfly) + Interval (p2) + Addon + Ratio + Multiplier + Actions */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+        {isButterfly && (
+          <div>
+            <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Leg 3 Expiry</label>
+            <select value={section.exp3 || ''}
+              onChange={e => {
+                const exp = expList.find(x => x.code === e.target.value)
+                onUpdate({ ...section, exp3: e.target.value, exp3_label: exp?.label || e.target.value })
+              }}
+              className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan">
+              <option value="">Select...</option>
+              {expList.map(e => <option key={e.code} value={e.code}>{e.label}</option>)}
+            </select>
+          </div>
+        )}
+        {isIndexP2 && (
+          <div>
+            <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Interval</label>
+            <input type="number" value={section.interval ?? 100}
+              onChange={e => onUpdate({ ...section, interval: Number(e.target.value) })}
+              step={50}
+              className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan" />
+          </div>
+        )}
         <div>
           <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Add-on</label>
           <input type="number" value={section.addon}
@@ -268,6 +389,22 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
             step={50}
             className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan" />
         </div>
+        <div>
+          <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Ratio</label>
+          <input type="number" value={section.ratio ?? 1}
+            onChange={e => onUpdate({ ...section, ratio: Number(e.target.value) })}
+            step={0.1} min={0.1}
+            className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan" />
+        </div>
+        {isNfoBfo && (
+          <div>
+            <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Multiplier</label>
+            <input type="number" value={section.multiplier ?? 3.3}
+              onChange={e => onUpdate({ ...section, multiplier: Number(e.target.value) })}
+              step={0.1}
+              className="w-full bg-panelLight border border-edge rounded-lg px-3 py-2 text-sm text-bright font-mono outline-none focus:border-cyan" />
+          </div>
+        )}
         <div className="flex flex-col gap-1">
           <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Actions</label>
           <div className="flex gap-1">
@@ -275,7 +412,7 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
               className="flex-1 py-2 rounded-lg bg-cyan text-void font-bold text-xs hover:bg-cyan/90 transition-all disabled:opacity-50">
               {loadingAtm || loadingLive ? '...' : '▶ Start'}
             </button>
-            <button onClick={() => fetchRange()} disabled={loadingRange || !strikes.length}
+            <button onClick={() => fetchRange()} disabled={loadingRange || (!ceStrikes.length && !peStrikes.length)}
               className="flex-1 py-2 rounded-lg bg-panelLight border border-cyan/30 text-cyan font-bold text-xs hover:bg-cyan/10 transition-all disabled:opacity-50">
               {loadingRange ? '...' : '📊 Range'}
             </button>
@@ -284,9 +421,11 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
       </div>
 
       {/* Status bar */}
-      {strikes.length > 0 && (
-        <div className="flex items-center gap-3 mb-4 text-[10px] font-mono text-ink/60">
-          <span>Strikes: {strikes.join(', ')}</span>
+      {(ceStrikes.length > 0 || peStrikes.length > 0) && (
+        <div className="flex items-center gap-3 mb-4 text-[10px] font-mono text-ink/60 flex-wrap">
+          <span>CE: {ceStrikes.join(', ')}</span>
+          <span>•</span>
+          <span>PE: {peStrikes.join(', ')}</span>
           <span>•</span>
           <span className="flex items-center gap-1">
             <span className={`w-1.5 h-1.5 rounded-full ${loadingLive ? 'bg-amber-400' : 'bg-emerald'} animate-pulse`} />
@@ -303,27 +442,23 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
         </div>
       )}
 
-      {/* Tables */}
       <SpreadTable data={ceData} title="Call Spreads (CE)" color="bg-blue" />
       <SpreadTable data={peData} title="Put Spreads (PE)"  color="bg-amber-400" />
     </div>
   )
 })
 
-function round2(v) { return Math.round(v * 100) / 100 }
-
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function LiveMonitorPage() {
   const { getAuthHeader } = useAuthStore()
   const authHeader = getAuthHeader()
 
-  const [sections,      setSections]      = useState([])
-  const [saving,        setSaving]        = useState(false)
-  const [saveMsg,       setSaveMsg]       = useState('')
-  const [startingAll,   setStartingAll]   = useState(false)
-  const [rangingAll,    setRangingAll]    = useState(false)
+  const [sections,    setSections]    = useState([])
+  const [saving,      setSaving]      = useState(false)
+  const [saveMsg,     setSaveMsg]     = useState('')
+  const [startingAll, setStartingAll] = useState(false)
+  const [rangingAll,  setRangingAll]  = useState(false)
 
-  // One ref per section — keyed by section.id
   const sectionRefs = useRef({})
 
   useEffect(() => { loadConfig() }, [])
@@ -340,15 +475,18 @@ export default function LiveMonitorPage() {
 
   const addSection = () => {
     setSections(prev => [...prev, {
-      id:         `section_${Date.now()}`,
-      exchange:   'NSE',
-      index:      'NIFTY',
-      exp1:       '',
-      exp1_label: '',
-      exp2:       '',
-      exp2_label: '',
-      addon:      100,
-      d3_ranges:  {},
+      id:          `section_${Date.now()}`,
+      exchange:    'NSE',
+      index:       'NIFTY',
+      strategy:    'index_p1',
+      exp1:        '', exp1_label: '',
+      exp2:        '', exp2_label: '',
+      exp3:        '', exp3_label: '',
+      addon:       100,
+      ratio:       1,
+      multiplier:  3.3,
+      interval:    100,
+      d3_ranges:   {},
     }])
   }
 
@@ -372,12 +510,9 @@ export default function LiveMonitorPage() {
     } catch (e) {
       setSaveMsg('Save failed!')
       setTimeout(() => setSaveMsg(''), 3000)
-    } finally {
-      setSaving(false)
-    }
+    } finally { setSaving(false) }
   }
 
-  // ── Start All — calls handleStart on every section sequentially
   const handleStartAll = async () => {
     setStartingAll(true)
     for (const section of sections) {
@@ -389,7 +524,6 @@ export default function LiveMonitorPage() {
     setStartingAll(false)
   }
 
-  // ── Range All — calls fetchRange on every section sequentially
   const handleRangeAll = async () => {
     setRangingAll(true)
     for (const section of sections) {
@@ -403,12 +537,11 @@ export default function LiveMonitorPage() {
 
   return (
     <div className="p-6">
-      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-bright tracking-tight">Live Spread Monitor</h1>
           <p className="text-sm text-ink mt-1">
-            Index calendar spreads · Auto-refresh 30s · Telegram alerts running 24/7
+            Multi-strategy spread monitor · Auto-refresh 30s · Telegram alerts running 24/7
           </p>
         </div>
         <div className="flex items-center gap-3 flex-wrap justify-end">
@@ -417,25 +550,18 @@ export default function LiveMonitorPage() {
               {saveMsg}
             </span>
           )}
-
-          {/* ── Global Start All + Range All buttons ── */}
           {sections.length > 0 && (
             <>
-              <button
-                onClick={handleStartAll}
-                disabled={startingAll}
+              <button onClick={handleStartAll} disabled={startingAll}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan text-void font-bold text-sm hover:bg-cyan/90 transition-all disabled:opacity-60">
                 {startingAll ? '⏳ Starting...' : '▶▶ Start All'}
               </button>
-              <button
-                onClick={handleRangeAll}
-                disabled={rangingAll}
+              <button onClick={handleRangeAll} disabled={rangingAll}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-panelLight border border-cyan/40 text-cyan font-bold text-sm hover:bg-cyan/10 transition-all disabled:opacity-60">
                 {rangingAll ? '⏳ Ranging...' : '📊 Range All'}
               </button>
             </>
           )}
-
           <button onClick={saveConfig} disabled={saving}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-panelLight border border-edge text-sm font-semibold text-ink hover:text-bright hover:border-cyan/50 transition-all disabled:opacity-50">
             {saving ? '...' : '💾 Save Config'}
@@ -450,16 +576,14 @@ export default function LiveMonitorPage() {
         </div>
       </div>
 
-      {/* Info banner */}
       <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-emerald/5 border border-emerald/20 mb-6">
         <div className="w-2 h-2 rounded-full bg-emerald animate-pulse flex-shrink-0" />
         <p className="text-xs font-mono text-emerald/80">
           Backend scheduler running · Telegram alerts active even when browser is closed ·
-          Click <b>Start All</b> to begin monitoring all sections · Click <b>Range All</b> to fetch 3D/5D High/Low for all
+          Click <b>Start All</b> to begin monitoring · Click <b>Range All</b> to fetch 3D/5D High/Low for all sections
         </p>
       </div>
 
-      {/* Sections */}
       {sections.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-64 bg-panel border border-edge rounded-2xl">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#8b92a8" strokeWidth="1.5" className="mb-4">
