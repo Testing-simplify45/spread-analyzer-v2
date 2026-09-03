@@ -79,25 +79,24 @@ class FetchRangeRequest(BaseModel):
 # ── Save/Load configs ─────────────────────────────────────────────────────────
 
 @router.get("/test-telegram")
-def test_telegram(authorization: str = Header(None)):
-    """Send a test Telegram message."""
-    _get_fyers(authorization)
+def test_telegram():
+    """Send a test Telegram message — no auth needed."""
     from services.telegram_service import send_telegram
     import os
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "NOT SET")
-    chat  = os.environ.get("TELEGRAM_CHAT_ID", "NOT SET")
+    chat  = os.environ.get("TELEGRAM_CHAT_ID",   "NOT SET")
     result = send_telegram(
         f"🧪 <b>Test Message</b>\n"
-        f"Option Spread Analyzer is connected!\n"
-        f"Token configured: {'✅' if token != 'NOT SET' else '❌'}\n"
-        f"Chat ID configured: {'✅' if chat != 'NOT SET' else '❌'}"
+        f"Option Spread Analyzer connected!\n"
+        f"Token: {'✅' if token != 'NOT SET' else '❌'}\n"
+        f"Chat ID: {'✅' if chat != 'NOT SET' else '❌'}"
     )
     return {
-        "sent": result,
-        "token_set": token != "NOT SET",
-        "chat_id_set": chat != "NOT SET",
-        "token_preview": token[:10] + "..." if token != "NOT SET" else "NOT SET",
-        "chat_id": chat,
+        "sent":          result,
+        "token_set":     token != "NOT SET",
+        "chat_id_set":   chat  != "NOT SET",
+        "token_preview": token[:15] + "..." if token != "NOT SET" else "NOT SET",
+        "chat_id":       chat,
     }
 def save_config(body: SaveConfigRequest, authorization: str = Header(None)):
     """Save monitor sections to Supabase."""
