@@ -259,9 +259,23 @@ def run_monitor_cycle():
 def _scheduler_loop():
     """Background loop — runs every 30 seconds."""
     print("[Monitor] Scheduler started!")
+    send_telegram("🟢 <b>Option Spread Analyzer</b>\nMonitor scheduler started!\n⏰ " + 
+                  datetime.now().strftime('%H:%M:%S'))
+    
+    cycle_count = 0
     while True:
         try:
             run_monitor_cycle()
+            cycle_count += 1
+            
+            # Send heartbeat every 15 minutes (30 cycles × 30 seconds = 15 minutes)
+            if cycle_count % 30 == 0:
+                send_telegram(
+                    f"💚 <b>Monitor Active</b>\n"
+                    f"Scheduler running normally\n"
+                    f"Cycles completed: {cycle_count}\n"
+                    f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                )
         except Exception as e:
             print(f"[Monitor] Cycle error: {e}")
         time.sleep(30)
