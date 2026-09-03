@@ -12,6 +12,7 @@ import ButterflyIndexPage from './pages/ButterflyIndexPage'
 import ButterflyNfoBfoPage from './pages/ButterflyNfoBfoPage'
 import StraddlePage from './pages/StraddlePage'
 import StraddleSpreadPage from './pages/StraddleSpreadPage'
+import LiveMonitorPage from './pages/LiveMonitorPage'
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated } = useAuthStore()
@@ -55,6 +56,7 @@ export default function App() {
         <Route path="butterfly-nfo-bfo" element={<ButterflyNfoBfoPage />} />
         <Route path="straddle"          element={<StraddlePage />} />
         <Route path="straddle-spread-nfobfo" element={<StraddleSpreadPage />} />
+        <Route path="live-monitor"           element={<LiveMonitorPage />} />
       </Route>
 
       {/* Default */}
