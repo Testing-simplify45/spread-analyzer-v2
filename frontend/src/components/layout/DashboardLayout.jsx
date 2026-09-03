@@ -56,6 +56,13 @@ const StraddleIcon = () => (
     <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
   </svg>
 )
+const LiveIcon = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <circle cx="12" cy="12" r="10"/>
+    <circle cx="12" cy="12" r="3" fill="currentColor"/>
+    <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
+  </svg>
+)
 const SpreadIcon = () => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
     <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
@@ -162,6 +169,7 @@ export default function DashboardLayout() {
           <NavItem to="/dashboard/spread-analysis" icon={<SpreadIcon />}  label="Spread Analysis" />
           <NavItem to="/dashboard/nfo-bfo"          icon={<BoltIcon />}   label="NFO-BFO Spreads" />
           <NavItem to="/dashboard/straddle"         icon={<StraddleIcon />} label="Straddle Monitor" />
+          <NavItem to="/dashboard/live-monitor"     icon={<LiveIcon />}    label="Live Monitor" />
 
           {/* Straddle Spread */}
           <div className="mt-1">
