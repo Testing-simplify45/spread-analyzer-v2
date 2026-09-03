@@ -32,6 +32,8 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
   const [atm,         setAtm]         = useState(null)
   const [ceData,      setCeData]      = useState([])
   const [peData,      setPeData]      = useState([])
+  const [lastUpdated, setLastUpdated] = useState(null)
+  const [refreshCount, setRefreshCount] = useState(0)
   const [loadingAtm,  setLoadingAtm]  = useState(false)
   const [loadingLive, setLoadingLive] = useState(false)
   const [loadingRange,setLoadingRange]= useState(false)
@@ -80,6 +82,8 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
         addon: section.addon, strikes: s,
       }, { headers: { Authorization: authHeader } })
 
+      console.log('[LiveMonitor] Live data:', res.data)
+
       // Merge with existing range data
       const mergeData = (rows, type) => rows.map(row => ({
         ...row,
@@ -94,6 +98,8 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
 
       setCeData(mergeData(res.data.ce || [], 'CE'))
       setPeData(mergeData(res.data.pe || [], 'PE'))
+      setLastUpdated(new Date().toLocaleTimeString())
+      setRefreshCount(c => c + 1)
     } catch (e) { console.error(e) }
     finally { setLoadingLive(false) }
   }, [strikes, section, exchange, authHeader, prevClose, d3Ranges, d5Ranges])
@@ -292,10 +298,17 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
           <span>Strikes: {strikes.join(', ')}</span>
           <span>•</span>
           <span className="flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald animate-pulse" />
-            Auto-refresh: 30s
+            <span className={`w-1.5 h-1.5 rounded-full ${loadingLive ? 'bg-amber-400' : 'bg-emerald'} animate-pulse`} />
+            {loadingLive ? 'Updating...' : 'Auto-refresh: 30s'}
           </span>
-          {loadingLive && <span className="text-cyan animate-pulse">Updating...</span>}
+          {lastUpdated && (
+            <>
+              <span>•</span>
+              <span className="text-emerald">Last updated: {lastUpdated}</span>
+              <span>•</span>
+              <span>Refreshes: {refreshCount}</span>
+            </>
+          )}
         </div>
       )}
 
