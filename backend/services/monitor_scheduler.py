@@ -10,6 +10,8 @@ import os
 import threading
 import time
 from datetime import date, timedelta, datetime
+import zoneinfo
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 from typing import Optional
 import pandas as pd
 
@@ -204,7 +206,7 @@ def check_alerts(index: str, strike: int, opt_type: str,
 
 def run_monitor_cycle():
     """Run one cycle of the monitor — fetch LTPs and check alerts."""
-    print(f"[Monitor] Running cycle at {time.strftime('%H:%M:%S')}")
+    print(f"[Monitor] Running cycle at {datetime.now(IST).strftime('%H:%M:%S')}")
 
     fyers = get_fyers()
     if not fyers:
@@ -258,15 +260,7 @@ def run_monitor_cycle():
 
 def is_market_hours() -> bool:
     """Check if current time is within NSE market hours (9:15 AM - 3:30 PM IST, Mon-Fri)."""
-    from datetime import timezone
-    import zoneinfo
-    try:
-        ist = zoneinfo.ZoneInfo("Asia/Kolkata")
-    except Exception:
-        # Fallback: IST = UTC + 5:30
-        from datetime import timezone, timedelta as td
-        ist = timezone(td(hours=5, minutes=30))
-    now = datetime.now(ist)
+    now = datetime.now(IST)
     if now.weekday() >= 5:  # Saturday or Sunday
         return False
     market_open  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
@@ -280,7 +274,7 @@ def _scheduler_loop():
     send_telegram(
         "🟢 <b>Option Spread Analyzer</b>\n"
         "Monitor scheduler started!\n"
-        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
     )
 
     last_heartbeat = time.time()
@@ -297,7 +291,7 @@ def _scheduler_loop():
                     send_telegram(
                         f"💚 <b>Monitor Active</b>\n"
                         f"Scheduler running normally\n"
-                        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+                        f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
                     )
                     last_heartbeat = now
             else:
