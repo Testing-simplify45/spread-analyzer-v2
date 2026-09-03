@@ -46,16 +46,25 @@ def fmt_expiry(code: str) -> str:
     return code
 
 
+def _today_range_line(today_high, today_low) -> str:
+    """Format today's high/low line for alerts."""
+    if today_high is not None and today_low is not None:
+        return f"📊 Today's Range: {today_low:.0f} — {today_high:.0f}\n"
+    return ""
+
+
 def alert_near_3d_low(
     index: str, strike: int, option_type: str,
     exp1: str, exp2: str,
     d3_low: float, d3_high: float, current: float,
+    today_high=None, today_low=None,
 ) -> str:
     e1 = fmt_expiry(exp1)
     e2 = fmt_expiry(exp2)
     return (
-        f"🟡 <b>{index} {strike} {option_type} ({e1} - {e2})</b> near 3D LOW\n"
-        f"3D Range: {d3_low:.0f} / {d3_high:.0f} | Current: {current:.0f}\n"
+        f"🟡 <b>{index} {strike} {option_type} ({e1} → {e2})</b> near 3D LOW\n"
+        f"Current: <b>{current:.0f}</b> | 3D Range: {d3_low:.0f} – {d3_high:.0f}\n"
+        f"{_today_range_line(today_high, today_low)}"
         f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
     )
 
@@ -64,12 +73,14 @@ def alert_below_3d_low(
     index: str, strike: int, option_type: str,
     exp1: str, exp2: str,
     d3_low: float, d3_high: float, current: float, pts: float,
+    today_high=None, today_low=None,
 ) -> str:
     e1 = fmt_expiry(exp1)
     e2 = fmt_expiry(exp2)
     return (
-        f"🔴 <b>{index} {strike} {option_type} ({e1} - {e2})</b> BELOW 3D LOW by {pts:.0f}pts\n"
-        f"3D Range: {d3_low:.0f} / {d3_high:.0f} | Current: {current:.0f}\n"
+        f"🔴 <b>{index} {strike} {option_type} ({e1} → {e2})</b> BELOW 3D LOW by {pts:.0f}pts\n"
+        f"Current: <b>{current:.0f}</b> | 3D Range: {d3_low:.0f} – {d3_high:.0f}\n"
+        f"{_today_range_line(today_high, today_low)}"
         f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
     )
 
@@ -78,12 +89,14 @@ def alert_near_3d_high(
     index: str, strike: int, option_type: str,
     exp1: str, exp2: str,
     d3_low: float, d3_high: float, current: float,
+    today_high=None, today_low=None,
 ) -> str:
     e1 = fmt_expiry(exp1)
     e2 = fmt_expiry(exp2)
     return (
-        f"🟡 <b>{index} {strike} {option_type} ({e1} - {e2})</b> near 3D HIGH\n"
-        f"3D Range: {d3_low:.0f} / {d3_high:.0f} | Current: {current:.0f}\n"
+        f"🟡 <b>{index} {strike} {option_type} ({e1} → {e2})</b> near 3D HIGH\n"
+        f"Current: <b>{current:.0f}</b> | 3D Range: {d3_low:.0f} – {d3_high:.0f}\n"
+        f"{_today_range_line(today_high, today_low)}"
         f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
     )
 
@@ -92,11 +105,13 @@ def alert_above_3d_high(
     index: str, strike: int, option_type: str,
     exp1: str, exp2: str,
     d3_low: float, d3_high: float, current: float, pts: float,
+    today_high=None, today_low=None,
 ) -> str:
     e1 = fmt_expiry(exp1)
     e2 = fmt_expiry(exp2)
     return (
-        f"🔴 <b>{index} {strike} {option_type} ({e1} - {e2})</b> ABOVE 3D HIGH by {pts:.0f}pts\n"
-        f"3D Range: {d3_low:.0f} / {d3_high:.0f} | Current: {current:.0f}\n"
+        f"🔴 <b>{index} {strike} {option_type} ({e1} → {e2})</b> ABOVE 3D HIGH by {pts:.0f}pts\n"
+        f"Current: <b>{current:.0f}</b> | 3D Range: {d3_low:.0f} – {d3_high:.0f}\n"
+        f"{_today_range_line(today_high, today_low)}"
         f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
     )
