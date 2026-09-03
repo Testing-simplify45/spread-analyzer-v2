@@ -29,9 +29,33 @@ SUPABASE_KEY    = os.environ.get("SUPABASE_KEY", "")
 # Key: f"{index}_{strike}_{opt_type}_{exp1}_{exp2}_{level}"
 _alert_sent: dict[str, bool] = {}
 
+# Today's high/low tracker — resets each trading day
+# Key: f"{index}_{strike}_{opt_type}_{exp1}_{exp2}"
+_today_high: dict[str, float] = {}
+_today_low:  dict[str, float] = {}
+_today_date: Optional[str]    = None  # tracks current date to reset daily
+
 # Current Fyers token (updated by auth router when user logs in)
 _fyers_token: Optional[str] = None
 _fyers_client_id: Optional[str] = None
+
+
+def update_today_range(key: str, value: float):
+    """Update today's high/low for a strike. Resets at start of new trading day."""
+    global _today_date, _today_high, _today_low
+    from datetime import date
+    today_str = str(date.today())
+    if _today_date != today_str:
+        # New day — reset all tracking
+        _today_high.clear()
+        _today_low.clear()
+        _today_date = today_str
+        _alert_sent.clear()  # also reset alerts for the new day
+        print(f"[Monitor] New trading day {today_str} — alert state reset")
+    if key not in _today_high or value > _today_high[key]:
+        _today_high[key] = value
+    if key not in _today_low or value < _today_low[key]:
+        _today_low[key] = value
 
 
 def set_fyers_token(client_id: str, access_token: str):
@@ -157,17 +181,20 @@ def get_spread_ltp(fyers, exchange: str, index: str,
 def get_3d_range(fyers, exchange: str, index: str,
                   exp1: str, exp2: str, strike: int, opt_type: str,
                   days: int = 3) -> tuple[Optional[float], Optional[float]]:
-    """Get high and low across last N trading days."""
+    """Get high and low across last N completed trading days (never includes today)."""
     try:
         from services.fyers_service import build_symbol, compute_spread_series
         sym1 = build_symbol(exchange, index, exp1, strike, opt_type)
         sym2 = build_symbol(exchange, index, exp2, strike, opt_type)
 
         all_highs, all_lows = [], []
-        d = date.today()
-        collected = 0
+        # FIX: start from yesterday, never today
+        d = date.today() - timedelta(days=1)
+        # Try up to days*2 calendar days to find enough data
+        max_lookback = days * 2 * 2
+        attempts = 0
 
-        while collected < days:
+        while len(all_highs) < days and attempts < max_lookback:
             if d.weekday() < 5:
                 df = compute_spread_series(fyers, sym1, sym2, d, 1.0, "1")
                 if not df.empty:
@@ -175,9 +202,10 @@ def get_3d_range(fyers, exchange: str, index: str,
                     if len(spreads):
                         all_highs.append(float(spreads.max()))
                         all_lows.append(float(spreads.min()))
-                collected += 1
             d -= timedelta(days=1)
+            attempts += 1
 
+        # Return whatever data we have (fallback gracefully)
         if all_highs and all_lows:
             return max(all_highs), min(all_lows)
     except Exception as e:
@@ -188,7 +216,9 @@ def get_3d_range(fyers, exchange: str, index: str,
 def check_alerts(index: str, strike: int, opt_type: str,
                   exp1: str, exp2: str,
                   current: float, d3_high: float, d3_low: float,
-                  prev_close: Optional[float] = None):
+                  prev_close: Optional[float] = None,
+                  today_high: Optional[float] = None,
+                  today_low:  Optional[float] = None):
     """Check if any alert conditions are met and send Telegram."""
     prefix = f"{index}_{strike}_{opt_type}_{exp1}_{exp2}"
 
@@ -196,7 +226,8 @@ def check_alerts(index: str, strike: int, opt_type: str,
     if current <= d3_low + 1:
         key = f"{prefix}_near_low"
         if not _alert_sent.get(key):
-            msg = alert_near_3d_low(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current)
+            msg = alert_near_3d_low(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current,
+                                    today_high=today_high, today_low=today_low)
             if send_telegram(msg):
                 _alert_sent[key] = True
                 print(f"[Monitor] Alert sent: near 3D low for {index} {strike} {opt_type}")
@@ -206,7 +237,8 @@ def check_alerts(index: str, strike: int, opt_type: str,
         key = f"{prefix}_below_low_5"
         if not _alert_sent.get(key):
             pts = d3_low - current
-            msg = alert_below_3d_low(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current, pts)
+            msg = alert_below_3d_low(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current, pts,
+                                     today_high=today_high, today_low=today_low)
             if send_telegram(msg):
                 _alert_sent[key] = True
                 print(f"[Monitor] Alert sent: below 3D low by 5pts for {index} {strike} {opt_type}")
@@ -215,7 +247,8 @@ def check_alerts(index: str, strike: int, opt_type: str,
     if current >= d3_high - 1:
         key = f"{prefix}_near_high"
         if not _alert_sent.get(key):
-            msg = alert_near_3d_high(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current)
+            msg = alert_near_3d_high(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current,
+                                     today_high=today_high, today_low=today_low)
             if send_telegram(msg):
                 _alert_sent[key] = True
                 print(f"[Monitor] Alert sent: near 3D high for {index} {strike} {opt_type}")
@@ -225,21 +258,23 @@ def check_alerts(index: str, strike: int, opt_type: str,
         key = f"{prefix}_above_high_5"
         if not _alert_sent.get(key):
             pts = current - d3_high
-            msg = alert_above_3d_high(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current, pts)
+            msg = alert_above_3d_high(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current, pts,
+                                      today_high=today_high, today_low=today_low)
             if send_telegram(msg):
                 _alert_sent[key] = True
                 print(f"[Monitor] Alert sent: above 3D high by 5pts for {index} {strike} {opt_type}")
 
     # Prev close +10 alert (once only)
+    today_line = f"📊 Today's Range: {today_low:.0f} — {today_high:.0f}\n" if today_high is not None and today_low is not None else ""
     if prev_close is not None:
         if current >= prev_close + 10:
             key = f"{prefix}_pc_high"
             if not _alert_sent.get(key):
                 pts = round(current - prev_close, 2)
                 msg = (
-                    f"📈 <b>Prev Close +{pts} Alert</b>\n"
-                    f"Index: <b>{index}</b> | Strike: <b>{strike}</b> | {opt_type}\n"
-                    f"Prev Close: <b>{prev_close}</b> | Current: <b>{current}</b>\n"
+                    f"📈 <b>{index} {strike} {opt_type}</b> Prev Close +{pts:.0f} Alert\n"
+                    f"Prev Close: <b>{prev_close:.0f}</b> | Current: <b>{current:.0f}</b>\n"
+                    f"{today_line}"
                     f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
                 )
                 if send_telegram(msg):
@@ -249,9 +284,9 @@ def check_alerts(index: str, strike: int, opt_type: str,
             if not _alert_sent.get(key):
                 pts = round(prev_close - current, 2)
                 msg = (
-                    f"📉 <b>Prev Close -{pts} Alert</b>\n"
-                    f"Index: <b>{index}</b> | Strike: <b>{strike}</b> | {opt_type}\n"
-                    f"Prev Close: <b>{prev_close}</b> | Current: <b>{current}</b>\n"
+                    f"📉 <b>{index} {strike} {opt_type}</b> Prev Close -{pts:.0f} Alert\n"
+                    f"Prev Close: <b>{prev_close:.0f}</b> | Current: <b>{current:.0f}</b>\n"
+                    f"{today_line}"
                     f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
                 )
                 if send_telegram(msg):
@@ -312,16 +347,24 @@ def run_monitor_cycle():
                     if current is None:
                         continue
 
-                    range_key = f"{strike}_{opt_type}"
-                    d3_high   = d3_ranges.get(range_key, {}).get("high")
-                    d3_low    = d3_ranges.get(range_key, {}).get("low")
-                    prev_close = section.get("prev_closes", {}).get(range_key)
+                    range_key    = f"{strike}_{opt_type}"
+                    tracker_key  = f"{index}_{strike}_{opt_type}_{exp1}_{exp2}"
+                    d3_high      = d3_ranges.get(range_key, {}).get("high")
+                    d3_low       = d3_ranges.get(range_key, {}).get("low")
+                    prev_close   = section.get("prev_closes", {}).get(range_key)
+
+                    # Track today's intraday high/low
+                    update_today_range(tracker_key, current)
+                    t_high = _today_high.get(tracker_key)
+                    t_low  = _today_low.get(tracker_key)
 
                     if d3_high is None or d3_low is None:
                         continue
 
                     check_alerts(index, strike, opt_type, exp1, exp2,
-                                  current, d3_high, d3_low, prev_close=prev_close)
+                                  current, d3_high, d3_low,
+                                  prev_close=prev_close,
+                                  today_high=t_high, today_low=t_low)
 
         except Exception as e:
             print(f"[Monitor] Section error: {e}")
