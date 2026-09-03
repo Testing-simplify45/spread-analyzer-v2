@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useImperativeHandle, forwardRef } from 'react'
 import { useAuthStore } from '../hooks/useAuthStore'
 import { getExpiries } from '../utils/api'
 import axios from 'axios'
@@ -25,29 +25,26 @@ function statusBadge(current, d3High, d3Low) {
   return null
 }
 
-// Single section component
-function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
-  const [expList,     setExpList]     = useState([])
-  const [strikes,     setStrikes]     = useState([])
-  const [atm,         setAtm]         = useState(null)
-  const [ceData,      setCeData]      = useState([])
-  const [peData,      setPeData]      = useState([])
-  const [lastUpdated, setLastUpdated] = useState(null)
+// Single section component — wrapped in forwardRef so parent can call handleStart/fetchRange
+const MonitorSection = forwardRef(function MonitorSection({ section, authHeader, onUpdate, onRemove }, ref) {
+  const [expList,      setExpList]      = useState([])
+  const [strikes,      setStrikes]      = useState([])
+  const [atm,          setAtm]          = useState(null)
+  const [ceData,       setCeData]       = useState([])
+  const [peData,       setPeData]       = useState([])
+  const [lastUpdated,  setLastUpdated]  = useState(null)
   const [refreshCount, setRefreshCount] = useState(0)
-  const [loadingAtm,  setLoadingAtm]  = useState(false)
-  const [loadingLive, setLoadingLive] = useState(false)
-  const [loadingRange,setLoadingRange]= useState(false)
-  const [d3Ranges,    setD3Ranges]    = useState(section.d3_ranges || {})
-  const [d5Ranges,    setD5Ranges]    = useState({})
-  const [prevClose,   setPrevClose]   = useState({})
+  const [loadingAtm,   setLoadingAtm]   = useState(false)
+  const [loadingLive,  setLoadingLive]  = useState(false)
+  const [loadingRange, setLoadingRange] = useState(false)
+  const [d3Ranges,     setD3Ranges]     = useState(section.d3_ranges || {})
+  const [d5Ranges,     setD5Ranges]     = useState({})
+  const [prevClose,    setPrevClose]    = useState({})
   const intervalRef = useRef(null)
 
   const exchange = EXCHANGE_MAP[section.index] || 'NSE'
 
-  // Load expiries when index changes
-  useEffect(() => {
-    loadExpiries()
-  }, [section.index])
+  useEffect(() => { loadExpiries() }, [section.index])
 
   const loadExpiries = async () => {
     try {
@@ -56,7 +53,6 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
     } catch (e) { console.error(e) }
   }
 
-  // Fetch ATM + strikes
   const fetchAtm = useCallback(async () => {
     setLoadingAtm(true)
     try {
@@ -70,7 +66,6 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
     finally { setLoadingAtm(false) }
   }, [section.index, section.addon, authHeader])
 
-  // Fetch live spreads
   const fetchLive = useCallback(async (strikesToUse) => {
     const s = strikesToUse || strikes
     if (!s.length || !section.exp1 || !section.exp2) return
@@ -82,9 +77,6 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
         addon: section.addon, strikes: s,
       }, { headers: { Authorization: authHeader } })
 
-      console.log('[LiveMonitor] Live data:', res.data)
-
-      // Merge with existing range data
       const mergeData = (rows, type) => rows.map(row => ({
         ...row,
         prev_close: prevClose[`${row.strike}_${type}`] ?? null,
@@ -104,7 +96,6 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
     finally { setLoadingLive(false) }
   }, [strikes, section, exchange, authHeader, prevClose, d3Ranges, d5Ranges])
 
-  // Fetch prev close
   const fetchPrevClose = useCallback(async (strikesToUse) => {
     const s = strikesToUse || strikes
     if (!s.length || !section.exp1 || !section.exp2) return
@@ -118,7 +109,6 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
     } catch (e) { console.error(e) }
   }, [strikes, section, exchange, authHeader])
 
-  // Fetch 3D/5D ranges
   const fetchRange = useCallback(async (strikesToUse) => {
     const s = strikesToUse || strikes
     if (!s.length || !section.exp1 || !section.exp2) return
@@ -140,13 +130,11 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
       const d5 = r5.data.ranges || {}
       setD3Ranges(d3)
       setD5Ranges(d5)
-      // Save ranges to section for backend scheduler
       onUpdate({ ...section, d3_ranges: d3 })
     } catch (e) { console.error(e) }
     finally { setLoadingRange(false) }
   }, [strikes, section, exchange, authHeader, onUpdate])
 
-  // Start monitoring — fetch ATM, prev close, then start auto-refresh
   const handleStart = useCallback(async () => {
     if (!section.exp1 || !section.exp2) { alert('Please select both expiries'); return }
     await fetchAtm()
@@ -158,13 +146,16 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
     setStrikes(s)
     await fetchPrevClose(s)
     await fetchLive(s)
-
-    // Auto refresh every 30 seconds
     if (intervalRef.current) clearInterval(intervalRef.current)
     intervalRef.current = setInterval(() => fetchLive(s), 30000)
   }, [section, authHeader, fetchAtm, fetchPrevClose, fetchLive])
 
-  // Cleanup interval on unmount
+  // Expose handleStart and fetchRange to parent via ref
+  useImperativeHandle(ref, () => ({
+    handleStart,
+    fetchRange: () => fetchRange(),
+  }), [handleStart, fetchRange])
+
   useEffect(() => {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [])
@@ -317,7 +308,7 @@ function MonitorSection({ section, authHeader, onUpdate, onRemove }) {
       <SpreadTable data={peData} title="Put Spreads (PE)"  color="bg-amber-400" />
     </div>
   )
-}
+})
 
 function round2(v) { return Math.round(v * 100) / 100 }
 
@@ -326,14 +317,16 @@ export default function LiveMonitorPage() {
   const { getAuthHeader } = useAuthStore()
   const authHeader = getAuthHeader()
 
-  const [sections,  setSections]  = useState([])
-  const [saving,    setSaving]    = useState(false)
-  const [saveMsg,   setSaveMsg]   = useState('')
+  const [sections,      setSections]      = useState([])
+  const [saving,        setSaving]        = useState(false)
+  const [saveMsg,       setSaveMsg]       = useState('')
+  const [startingAll,   setStartingAll]   = useState(false)
+  const [rangingAll,    setRangingAll]    = useState(false)
 
-  // Load saved config on mount
-  useEffect(() => {
-    loadConfig()
-  }, [])
+  // One ref per section — keyed by section.id
+  const sectionRefs = useRef({})
+
+  useEffect(() => { loadConfig() }, [])
 
   const loadConfig = async () => {
     try {
@@ -341,23 +334,21 @@ export default function LiveMonitorPage() {
         headers: { Authorization: authHeader }
       })
       const saved = res.data.sections || []
-      if (saved.length) {
-        setSections(saved)
-      }
+      if (saved.length) setSections(saved)
     } catch (e) { console.error(e) }
   }
 
   const addSection = () => {
     setSections(prev => [...prev, {
-      id:          `section_${Date.now()}`,
-      exchange:    'NSE',
-      index:       'NIFTY',
-      exp1:        '',
-      exp1_label:  '',
-      exp2:        '',
-      exp2_label:  '',
-      addon:       100,
-      d3_ranges:   {},
+      id:         `section_${Date.now()}`,
+      exchange:   'NSE',
+      index:      'NIFTY',
+      exp1:       '',
+      exp1_label: '',
+      exp2:       '',
+      exp2_label: '',
+      addon:      100,
+      d3_ranges:  {},
     }])
   }
 
@@ -367,6 +358,7 @@ export default function LiveMonitorPage() {
 
   const removeSection = useCallback((id) => {
     setSections(prev => prev.filter(s => s.id !== id))
+    delete sectionRefs.current[id]
   }, [])
 
   const saveConfig = async () => {
@@ -385,6 +377,30 @@ export default function LiveMonitorPage() {
     }
   }
 
+  // ── Start All — calls handleStart on every section sequentially
+  const handleStartAll = async () => {
+    setStartingAll(true)
+    for (const section of sections) {
+      const ref = sectionRefs.current[section.id]
+      if (ref?.handleStart) {
+        try { await ref.handleStart() } catch (e) { console.error(e) }
+      }
+    }
+    setStartingAll(false)
+  }
+
+  // ── Range All — calls fetchRange on every section sequentially
+  const handleRangeAll = async () => {
+    setRangingAll(true)
+    for (const section of sections) {
+      const ref = sectionRefs.current[section.id]
+      if (ref?.fetchRange) {
+        try { await ref.fetchRange() } catch (e) { console.error(e) }
+      }
+    }
+    setRangingAll(false)
+  }
+
   return (
     <div className="p-6">
       {/* Header */}
@@ -395,12 +411,31 @@ export default function LiveMonitorPage() {
             Index calendar spreads · Auto-refresh 30s · Telegram alerts running 24/7
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap justify-end">
           {saveMsg && (
             <span className={`text-xs font-mono ${saveMsg.includes('failed') ? 'text-crimson' : 'text-emerald'}`}>
               {saveMsg}
             </span>
           )}
+
+          {/* ── Global Start All + Range All buttons ── */}
+          {sections.length > 0 && (
+            <>
+              <button
+                onClick={handleStartAll}
+                disabled={startingAll}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan text-void font-bold text-sm hover:bg-cyan/90 transition-all disabled:opacity-60">
+                {startingAll ? '⏳ Starting...' : '▶▶ Start All'}
+              </button>
+              <button
+                onClick={handleRangeAll}
+                disabled={rangingAll}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-panelLight border border-cyan/40 text-cyan font-bold text-sm hover:bg-cyan/10 transition-all disabled:opacity-60">
+                {rangingAll ? '⏳ Ranging...' : '📊 Range All'}
+              </button>
+            </>
+          )}
+
           <button onClick={saveConfig} disabled={saving}
             className="flex items-center gap-2 px-4 py-2 rounded-xl bg-panelLight border border-edge text-sm font-semibold text-ink hover:text-bright hover:border-cyan/50 transition-all disabled:opacity-50">
             {saving ? '...' : '💾 Save Config'}
@@ -420,7 +455,7 @@ export default function LiveMonitorPage() {
         <div className="w-2 h-2 rounded-full bg-emerald animate-pulse flex-shrink-0" />
         <p className="text-xs font-mono text-emerald/80">
           Backend scheduler running · Telegram alerts active even when browser is closed ·
-          Click <b>Start</b> on each section to begin monitoring · Click <b>Range</b> to fetch 3D/5D High/Low
+          Click <b>Start All</b> to begin monitoring all sections · Click <b>Range All</b> to fetch 3D/5D High/Low for all
         </p>
       </div>
 
@@ -440,6 +475,7 @@ export default function LiveMonitorPage() {
         sections.map(section => (
           <MonitorSection
             key={section.id}
+            ref={el => { sectionRefs.current[section.id] = el }}
             section={section}
             authHeader={authHeader}
             onUpdate={updateSection}
