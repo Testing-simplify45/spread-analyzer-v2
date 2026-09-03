@@ -290,6 +290,16 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
         is_butterfly = body.strategy in ("butterfly_index", "butterfly_nfo")
         results = {}
 
+        # FIX 1: Start from yesterday — never include today's candle
+        def prev_trading_days(n: int) -> list:
+            days_list = []
+            d = date.today() - timedelta(days=1)  # start from yesterday
+            while len(days_list) < n:
+                if d.weekday() < 5:  # Mon-Fri only
+                    days_list.append(d)
+                d -= timedelta(days=1)
+            return days_list
+
         for opt_type, strikes in [("CE", body.ce_strikes), ("PE", body.pe_strikes)]:
             for strike in strikes:
                 sym1 = build_symbol(body.exchange, body.index, body.exp1, strike, opt_type)
@@ -297,25 +307,28 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
                 sym3 = build_symbol(body.exchange, body.index, body.exp3, strike, opt_type) if is_butterfly and body.exp3 else None
 
                 all_highs, all_lows = [], []
-                d = date.today()
-                collected = 0
 
-                while collected < body.days:
-                    if d.weekday() < 5:
-                        df = compute_spread_series(fyers, sym1, sym2, d, 1.0, "1", sym3=sym3,
-                                                   strategy=body.strategy, ratio=body.ratio, multiplier=body.multiplier)
-                        if not df.empty:
-                            spreads = df["spread"].dropna().values
-                            if len(spreads):
-                                all_highs.append(float(spreads.max()))
-                                all_lows.append(float(spreads.min()))
-                        collected += 1
-                    d -= timedelta(days=1)
+                # FIX 2: Try up to body.days but use whatever data is available
+                # Try up to 2x days to find enough candles with real data
+                trading_days = prev_trading_days(body.days * 2)
+
+                for d in trading_days:
+                    if len(all_highs) >= body.days:
+                        break  # collected enough days with real data
+                    df = compute_spread_series(fyers, sym1, sym2, d, 1.0, "1", sym3=sym3,
+                                               strategy=body.strategy, ratio=body.ratio, multiplier=body.multiplier)
+                    if not df.empty:
+                        spreads = df["spread"].dropna().values
+                        if len(spreads):
+                            all_highs.append(float(spreads.max()))
+                            all_lows.append(float(spreads.min()))
 
                 key = f"{strike}_{opt_type}"
+                # FIX 2: Return whatever we have (even if < requested days) instead of None
                 results[key] = {
                     "high": round(max(all_highs), 2) if all_highs else None,
                     "low":  round(min(all_lows),  2) if all_lows  else None,
+                    "days_used": len(all_highs),  # so frontend knows how many days were used
                 }
 
         return {"ranges": results, "days": body.days}
