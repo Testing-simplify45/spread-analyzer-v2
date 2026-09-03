@@ -7,6 +7,8 @@ Sends Telegram alerts for spread monitor.
 import os
 import requests
 from datetime import datetime
+import zoneinfo
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -54,7 +56,7 @@ def alert_near_3d_low(
     return (
         f"🟡 <b>{index} {strike} {option_type} ({e1} - {e2})</b> near 3D LOW\n"
         f"3D Range: {d3_low:.0f} / {d3_high:.0f} | Current: {current:.0f}\n"
-        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
     )
 
 
@@ -68,7 +70,7 @@ def alert_below_3d_low(
     return (
         f"🔴 <b>{index} {strike} {option_type} ({e1} - {e2})</b> BELOW 3D LOW by {pts:.0f}pts\n"
         f"3D Range: {d3_low:.0f} / {d3_high:.0f} | Current: {current:.0f}\n"
-        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
     )
 
 
@@ -82,7 +84,7 @@ def alert_near_3d_high(
     return (
         f"🟡 <b>{index} {strike} {option_type} ({e1} - {e2})</b> near 3D HIGH\n"
         f"3D Range: {d3_low:.0f} / {d3_high:.0f} | Current: {current:.0f}\n"
-        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
     )
 
 
@@ -96,5 +98,5 @@ def alert_above_3d_high(
     return (
         f"🔴 <b>{index} {strike} {option_type} ({e1} - {e2})</b> ABOVE 3D HIGH by {pts:.0f}pts\n"
         f"3D Range: {d3_low:.0f} / {d3_high:.0f} | Current: {current:.0f}\n"
-        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
     )
