@@ -98,6 +98,9 @@ def test_telegram():
         "token_preview": token[:15] + "..." if token != "NOT SET" else "NOT SET",
         "chat_id":       chat,
     }
+
+
+@router.post("/config/save")
 def save_config(body: SaveConfigRequest, authorization: str = Header(None)):
     """Save monitor sections to Supabase."""
     _get_fyers(authorization)
