@@ -97,24 +97,58 @@ def get_atm_strike(fyers, index: str, addon: int) -> Optional[int]:
     return None
 
 
-def generate_strikes(atm: int, addon: int) -> list[int]:
-    """Generate 2 ITM + ATM + 4 OTM strikes."""
-    return [atm - 2*addon, atm - addon, atm, atm + addon,
-            atm + 2*addon, atm + 3*addon, atm + 4*addon]
+def generate_strikes(strategy: str, atm: int, addon: int) -> dict:
+    """Generate CE and PE strikes based on strategy."""
+    if strategy in ("index_p1", "index_p2"):
+        return {
+            "ce": [atm, atm + addon, atm + 2*addon, atm + 3*addon],
+            "pe": [atm, atm - addon, atm - 2*addon, atm - 3*addon],
+        }
+    return {
+        "ce": [atm, atm + addon, atm + 2*addon, atm + 3*addon, atm + 4*addon, atm + 5*addon],
+        "pe": [atm, atm - addon, atm - 2*addon, atm - 3*addon, atm - 4*addon, atm - 5*addon],
+    }
+
+
+def compute_spread_value(strategy: str, ltp1, ltp2, ltp3, ratio: float, multiplier: float):
+    """Compute spread based on strategy formula."""
+    r = ratio or 1.0
+    m = multiplier or 3.3
+    if ltp1 is None: return None
+    if strategy in ("index_p1", "index_p2"):
+        if ltp2 is None: return None
+        return round(ltp1 - (ltp2 * r), 2)
+    elif strategy == "nfo_bfo":
+        if ltp2 is None: return None
+        return round(ltp1 - (ltp2 * m * r), 2)
+    elif strategy == "butterfly_index":
+        if ltp2 is None or ltp3 is None: return None
+        return round(ltp1 - (ltp2 * r) - (ltp2 * r) + ltp3, 2)
+    elif strategy == "butterfly_nfo":
+        if ltp2 is None or ltp3 is None: return None
+        return round(ltp1 - (ltp2 * m * r) - (ltp2 * m * r) + ltp3, 2)
+    return None
 
 
 def get_spread_ltp(fyers, exchange: str, index: str,
-                    exp1: str, exp2: str, strike: int, opt_type: str) -> Optional[float]:
-    """Get live spread LTP = Leg1 - Leg2."""
+                    exp1: str, exp2: str, strike: int, opt_type: str,
+                    strategy: str = "index_p1", ratio: float = 1.0,
+                    multiplier: float = 3.3, exp3: str = "") -> Optional[float]:
+    """Get live spread LTP using strategy formula."""
     try:
         from services.fyers_service import build_symbol, get_batch_ltp
         sym1 = build_symbol(exchange, index, exp1, strike, opt_type)
         sym2 = build_symbol(exchange, index, exp2, strike, opt_type)
-        ltp_map = get_batch_ltp(fyers, [sym1, sym2])
+        syms = [sym1, sym2]
+        sym3 = None
+        if strategy in ("butterfly_index", "butterfly_nfo") and exp3:
+            sym3 = build_symbol(exchange, index, exp3, strike, opt_type)
+            syms.append(sym3)
+        ltp_map = get_batch_ltp(fyers, syms)
         ltp1 = ltp_map.get(sym1)
         ltp2 = ltp_map.get(sym2)
-        if ltp1 is not None and ltp2 is not None:
-            return round(ltp1 - ltp2, 2)
+        ltp3 = ltp_map.get(sym3) if sym3 else None
+        return compute_spread_value(strategy, ltp1, ltp2, ltp3, ratio, multiplier)
     except Exception as e:
         print(f"[Monitor] LTP error: {e}")
     return None
@@ -153,7 +187,8 @@ def get_3d_range(fyers, exchange: str, index: str,
 
 def check_alerts(index: str, strike: int, opt_type: str,
                   exp1: str, exp2: str,
-                  current: float, d3_high: float, d3_low: float):
+                  current: float, d3_high: float, d3_low: float,
+                  prev_close: Optional[float] = None):
     """Check if any alert conditions are met and send Telegram."""
     prefix = f"{index}_{strike}_{opt_type}_{exp1}_{exp2}"
 
@@ -195,6 +230,33 @@ def check_alerts(index: str, strike: int, opt_type: str,
                 _alert_sent[key] = True
                 print(f"[Monitor] Alert sent: above 3D high by 5pts for {index} {strike} {opt_type}")
 
+    # Prev close +10 alert (once only)
+    if prev_close is not None:
+        if current >= prev_close + 10:
+            key = f"{prefix}_pc_high"
+            if not _alert_sent.get(key):
+                pts = round(current - prev_close, 2)
+                msg = (
+                    f"📈 <b>Prev Close +{pts} Alert</b>\n"
+                    f"Index: <b>{index}</b> | Strike: <b>{strike}</b> | {opt_type}\n"
+                    f"Prev Close: <b>{prev_close}</b> | Current: <b>{current}</b>\n"
+                    f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
+                )
+                if send_telegram(msg):
+                    _alert_sent[key] = True
+        if current <= prev_close - 10:
+            key = f"{prefix}_pc_low"
+            if not _alert_sent.get(key):
+                pts = round(prev_close - current, 2)
+                msg = (
+                    f"📉 <b>Prev Close -{pts} Alert</b>\n"
+                    f"Index: <b>{index}</b> | Strike: <b>{strike}</b> | {opt_type}\n"
+                    f"Prev Close: <b>{prev_close}</b> | Current: <b>{current}</b>\n"
+                    f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
+                )
+                if send_telegram(msg):
+                    _alert_sent[key] = True
+
     # Reset alerts if price moves away from boundaries
     if current > d3_low + 5:
         _alert_sent.pop(f"{prefix}_near_low", None)
@@ -235,24 +297,31 @@ def run_monitor_cycle():
             if not atm:
                 continue
 
-            strikes = generate_strikes(atm, addon)
+            strategy   = section.get("strategy",   "index_p1")
+            ratio      = float(section.get("ratio",      1.0))
+            multiplier = float(section.get("multiplier", 3.3))
+            exp3       = section.get("exp3", "")
 
-            for strike in strikes:
-                for opt_type in ["CE", "PE"]:
-                    current = get_spread_ltp(fyers, exchange, index, exp1, exp2, strike, opt_type)
+            strike_map = generate_strikes(strategy, atm, addon)
+
+            for opt_type, strikes in [("CE", strike_map["ce"]), ("PE", strike_map["pe"])]:
+                for strike in strikes:
+                    current = get_spread_ltp(fyers, exchange, index, exp1, exp2, strike, opt_type,
+                                             strategy=strategy, ratio=ratio,
+                                             multiplier=multiplier, exp3=exp3)
                     if current is None:
                         continue
 
-                    # Get pre-computed 3D range
                     range_key = f"{strike}_{opt_type}"
                     d3_high   = d3_ranges.get(range_key, {}).get("high")
                     d3_low    = d3_ranges.get(range_key, {}).get("low")
+                    prev_close = section.get("prev_closes", {}).get(range_key)
 
                     if d3_high is None or d3_low is None:
                         continue
 
                     check_alerts(index, strike, opt_type, exp1, exp2,
-                                  current, d3_high, d3_low)
+                                  current, d3_high, d3_low, prev_close=prev_close)
 
         except Exception as e:
             print(f"[Monitor] Section error: {e}")
