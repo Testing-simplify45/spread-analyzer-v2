@@ -274,10 +274,22 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
                   <td className="py-2 px-3 font-mono text-ink">{fmtVal(row.prev_close)}</td>
                   <td className={`py-2 px-3 font-mono font-semibold ${valColor(row.current)}`}>{fmtVal(row.current)}</td>
                   <td className={`py-2 px-3 font-mono ${valColor(row.change)}`}>{fmtVal(row.change)}</td>
-                  <td className="py-2 px-3 font-mono text-emerald/80">{fmtVal(row.d3_high)}</td>
-                  <td className="py-2 px-3 font-mono text-crimson/80">{fmtVal(row.d3_low)}</td>
-                  <td className="py-2 px-3 font-mono text-emerald/50">{fmtVal(row.d5_high)}</td>
-                  <td className="py-2 px-3 font-mono text-crimson/50">{fmtVal(row.d5_low)}</td>
+                  <td className="py-2 px-3 font-mono text-emerald/80">
+                    {fmtVal(row.d3_high)}
+                    {row.d3_days != null && row.d3_days < 3 && <sup className="text-amber-400 text-[8px] ml-0.5">{row.d3_days}d</sup>}
+                  </td>
+                  <td className="py-2 px-3 font-mono text-crimson/80">
+                    {fmtVal(row.d3_low)}
+                    {row.d3_days != null && row.d3_days < 3 && <sup className="text-amber-400 text-[8px] ml-0.5">{row.d3_days}d</sup>}
+                  </td>
+                  <td className="py-2 px-3 font-mono text-emerald/50">
+                    {fmtVal(row.d5_high)}
+                    {row.d5_days != null && row.d5_days < 5 && <sup className="text-amber-400 text-[8px] ml-0.5">{row.d5_days}d</sup>}
+                  </td>
+                  <td className="py-2 px-3 font-mono text-crimson/50">
+                    {fmtVal(row.d5_low)}
+                    {row.d5_days != null && row.d5_days < 5 && <sup className="text-amber-400 text-[8px] ml-0.5">{row.d5_days}d</sup>}
+                  </td>
                   <td className="py-2 px-3">
                     <div className="flex flex-wrap gap-1">
                       {badges.map((b, bi) => (
@@ -474,7 +486,7 @@ export default function LiveMonitorPage() {
   }
 
   const addSection = () => {
-    setSections(prev => [...prev, {
+    const newSection = {
       id:          `section_${Date.now()}`,
       exchange:    'NSE',
       index:       'NIFTY',
@@ -487,7 +499,10 @@ export default function LiveMonitorPage() {
       multiplier:  3.3,
       interval:    100,
       d3_ranges:   {},
-    }])
+    }
+    setSections(prev => [newSection, ...prev])
+    // Scroll to top so user sees the new section immediately
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const updateSection = useCallback((updated) => {
