@@ -75,34 +75,105 @@ def derive_l2_strike(l1_strike: int, multiplier: float) -> int:
     return round_to_nearest_50(l1_strike / multiplier)
 
 
-def spread_series_multi(fyers, sym1, sym2, trade_date, strategy, ratio,
-                        sym3=None, sym2b=None, resolution="1"):
+# ── Candle fetching: one ranged call per symbol ───────────────────────────────
+# Fyers allows up to 100 days per request at 1-min resolution. The old code
+# requested a single day per call, so a 5-day window across 8 strikes fired
+# ~80 requests. We now fetch the whole window per symbol in ONE call and split
+# it by day locally, which cuts request volume by roughly 5x.
+_range_cache: dict = {}
+_range_stamp: dict = {}
+_CACHE_TTL_SEC = 900          # completed sessions don't change
+_last_call_ts = [0.0]
+_MIN_GAP_SEC = 0.25           # spacing between history calls
+
+
+def _fetch_candles_range(fyers, symbol: str, start_date, end_date, resolution: str = "1"):
     """
-    Build a spread series for any strategy using raw candles.
-    Returns a DataFrame with 'spread', 'spread_high', 'spread_low' columns.
-    Uses true high/low legs so the range reflects real intraday extremes.
+    Fetch candles for symbol across [start_date, end_date] in one call.
+    Returns {date_obj: DataFrame} split by session day.
+    """
+    import time
+    import pandas as pd
+
+    key = (symbol, str(start_date), str(end_date), resolution)
+    now = time.time()
+    stamped = _range_stamp.get(key)
+    if stamped and (now - stamped) < _CACHE_TTL_SEC:
+        return _range_cache.get(key, {})
+
+    gap = time.time() - _last_call_ts[0]
+    if gap < _MIN_GAP_SEC:
+        time.sleep(_MIN_GAP_SEC - gap)
+
+    by_day: dict = {}
+    try:
+        resp = fyers.history(data={
+            "symbol":      symbol,
+            "resolution":  str(resolution),
+            "date_format": "1",
+            "range_from":  start_date.strftime("%Y-%m-%d"),
+            "range_to":    end_date.strftime("%Y-%m-%d"),
+            "cont_flag":   "1",
+        })
+        _last_call_ts[0] = time.time()
+
+        if resp.get("s") != "ok":
+            # Surface the reason instead of silently returning empty —
+            # a 429 looks identical to "no data" otherwise.
+            print(f"[Candles] {symbol} {start_date}..{end_date} -> "
+                  f"{resp.get('code')} {resp.get('message')}")
+            return {}
+
+        raw = resp.get("candles") or []
+        if not raw:
+            return {}
+
+        ncol = len(raw[0])
+        cols = ["timestamp", "open", "high", "low", "close", "volume"]
+        if ncol > 6:
+            cols.append("extra")
+        df = pd.DataFrame(raw, columns=cols[:ncol])
+        df["datetime"] = (
+            pd.to_datetime(df["timestamp"], unit="s")
+            .dt.tz_localize("UTC")
+            .dt.tz_convert("Asia/Kolkata")
+            .dt.tz_localize(None)
+        )
+        df = df[["datetime", "open", "high", "low", "close", "volume"]].set_index("datetime")
+
+        for day, chunk in df.groupby(df.index.date):
+            by_day[day] = chunk
+
+        _range_cache[key] = by_day
+        _range_stamp[key] = time.time()
+    except Exception as e:
+        _last_call_ts[0] = time.time()
+        print(f"[Candles] {symbol} range fetch failed: {e}")
+
+    return by_day
+
+
+def spread_from_frames(df1, df2, strategy, ratio, df3=None, df2b=None):
+    """
+    Compute a spread series from already-fetched candle frames for ONE day.
+    Returns a DataFrame with spread / spread_high / spread_low.
+    Uses opposing legs for high/low so the range reflects true intraday extremes.
     """
     import pandas as pd
-    from services.fyers_service import get_candles
 
-    df1 = get_candles(fyers, sym1, trade_date, resolution)
-    df2 = get_candles(fyers, sym2, trade_date, resolution)
-    if df1.empty or df2.empty:
+    if df1 is None or df2 is None or df1.empty or df2.empty:
         return pd.DataFrame()
 
     df1 = df1[~df1.index.duplicated(keep="last")]
     df2 = df2[~df2.index.duplicated(keep="last")]
     common = df1.index.intersection(df2.index)
 
-    df3 = df2b = None
-    if sym3:
-        df3 = get_candles(fyers, sym3, trade_date, resolution)
+    if df3 is not None:
         if df3.empty:
             return pd.DataFrame()
         df3 = df3[~df3.index.duplicated(keep="last")]
         common = common.intersection(df3.index)
-    if sym2b:
-        df2b = get_candles(fyers, sym2b, trade_date, resolution)
+    if df2b is not None:
         if df2b.empty:
             return pd.DataFrame()
         df2b = df2b[~df2b.index.duplicated(keep="last")]
@@ -115,7 +186,7 @@ def spread_series_multi(fyers, sym1, sym2, trade_date, strategy, ratio,
     c1, h1, l1 = df1.loc[common, "close"], df1.loc[common, "high"], df1.loc[common, "low"]
     c2, h2, l2 = df2.loc[common, "close"], df2.loc[common, "high"], df2.loc[common, "low"]
 
-    # For butterfly_nfo, average the two L2 legs
+    # butterfly_nfo averages the two L2 legs
     if df2b is not None:
         c2 = (c2 + df2b.loc[common, "close"]) / 2
         h2 = (h2 + df2b.loc[common, "high"])  / 2
@@ -379,14 +450,15 @@ def fetch_live_spreads(body: FetchLiveRequest, authorization: str = Header(None)
 def fetch_prev_close(body: FetchLiveRequest, authorization: str = Header(None)):
     fyers = _get_fyers(authorization)
     try:
-        from services.fyers_service import build_symbol, compute_spread_series
+        from services.fyers_service import build_symbol
 
+        # Most recent completed trading day
         yesterday = date.today() - timedelta(days=1)
         while yesterday.weekday() >= 5:
             yesterday -= timedelta(days=1)
 
-        is_butterfly  = body.strategy in ("butterfly_index", "butterfly_nfo")
-        is_multi_idx  = body.strategy in ("nfo_bfo", "butterfly_nfo")
+        is_butterfly = body.strategy in ("butterfly_index", "butterfly_nfo")
+        is_multi_idx = body.strategy in ("nfo_bfo", "butterfly_nfo")
         results = {}
 
         for opt_type, l1_strikes in [("CE", body.ce_strikes), ("PE", body.pe_strikes)]:
@@ -404,8 +476,13 @@ def fetch_prev_close(body: FetchLiveRequest, authorization: str = Header(None)):
                         if is_multi_idx and body.exp_l2b:
                             sym2b = build_symbol(body.exchange2, body.index2, body.exp_l2b, l2_strike, opt_type)
 
-                    df = spread_series_multi(fyers, sym1, sym2, yesterday,
-                                             body.strategy, body.ratio, sym3=sym3, sym2b=sym2b)
+                    # Reuses the range cache when Range was clicked first
+                    d1 = _fetch_candles_range(fyers, sym1, yesterday, yesterday).get(yesterday)
+                    d2 = _fetch_candles_range(fyers, sym2, yesterday, yesterday).get(yesterday)
+                    d3 = _fetch_candles_range(fyers, sym3, yesterday, yesterday).get(yesterday) if sym3 else None
+                    d2b = _fetch_candles_range(fyers, sym2b, yesterday, yesterday).get(yesterday) if sym2b else None
+
+                    df = spread_from_frames(d1, d2, body.strategy, body.ratio, df3=d3, df2b=d2b)
                     results[key] = round(float(df["spread"].iloc[-1]), 2) if not df.empty else None
                 except Exception as inner:
                     print(f"[PrevClose] {key} failed: {inner}")
@@ -416,35 +493,37 @@ def fetch_prev_close(body: FetchLiveRequest, authorization: str = Header(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Range ─────────────────────────────────────────────────────────────────────
-
 @router.post("/range")
 def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
     fyers = _get_fyers(authorization)
     try:
-        from services.fyers_service import build_symbol, compute_spread_series
+        from services.fyers_service import build_symbol
 
         is_butterfly = body.strategy in ("butterfly_index", "butterfly_nfo")
-        results = {}
-
-        def prev_trading_days(n: int) -> list:
-            """Return previous trading days (excluding today), with a small buffer
-            for holidays. Kept modest to avoid hitting Fyers rate limits."""
-            days_list = []
-            d = date.today() - timedelta(days=1)  # never include today
-            target   = n + 3      # small buffer for holidays
-            attempts = 0
-            while len(days_list) < target and attempts < 30:
-                if d.weekday() < 5:
-                    days_list.append(d)
-                d -= timedelta(days=1)
-                attempts += 1
-            return days_list
-
         is_multi_idx = body.strategy in ("nfo_bfo", "butterfly_nfo")
 
-        # Cache candles per day so 3D and 5D don't refetch the same days
-        trading_days = prev_trading_days(body.days)
+        def prev_trading_days(n: int) -> list:
+            """Previous trading days, most recent first. Never includes today."""
+            out = []
+            d = date.today() - timedelta(days=1)
+            attempts = 0
+            while len(out) < n and attempts < 30:
+                if d.weekday() < 5:
+                    out.append(d)
+                d -= timedelta(days=1)
+                attempts += 1
+            return out
+
+        # Walk 5 days once; derive both 3D and 5D from the same candles.
+        want_days    = max(5, body.days)
+        trading_days = prev_trading_days(want_days + 3)   # buffer for holidays
+        if not trading_days:
+            return {"ranges": {}, "ranges_3d": {}, "ranges_5d": {}, "days": body.days}
+
+        window_start = min(trading_days)
+        window_end   = max(trading_days)
+
+        ranges_3d, ranges_5d = {}, {}
 
         for opt_type, l1_strikes in [("CE", body.ce_strikes), ("PE", body.pe_strikes)]:
             for l1_strike in l1_strikes:
@@ -461,28 +540,52 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
                         if is_multi_idx and body.exp_l2b:
                             sym2b = build_symbol(body.exchange2, body.index2, body.exp_l2b, l2_strike, opt_type)
 
-                    all_highs, all_lows = [], []
-                    for d in trading_days:
-                        if len(all_highs) >= body.days:
+                    # ONE ranged call per symbol for the whole window
+                    days1 = _fetch_candles_range(fyers, sym1, window_start, window_end)
+                    days2 = _fetch_candles_range(fyers, sym2, window_start, window_end)
+                    days3 = _fetch_candles_range(fyers, sym3, window_start, window_end) if sym3 else None
+                    days2b = _fetch_candles_range(fyers, sym2b, window_start, window_end) if sym2b else None
+
+                    day_hi, day_lo = [], []
+                    for d in trading_days:                # most recent first
+                        if len(day_hi) >= want_days:
                             break
-                        df = spread_series_multi(fyers, sym1, sym2, d,
-                                                 body.strategy, body.ratio, sym3=sym3, sym2b=sym2b)
+                        f1 = days1.get(d)
+                        f2 = days2.get(d)
+                        f3 = days3.get(d) if days3 is not None else None
+                        f2b = days2b.get(d) if days2b is not None else None
+                        if f1 is None or f2 is None:
+                            continue
+                        if days3 is not None and f3 is None:
+                            continue
+                        if days2b is not None and f2b is None:
+                            continue
+
+                        df = spread_from_frames(f1, f2, body.strategy, body.ratio, df3=f3, df2b=f2b)
                         if not df.empty:
                             hi = df["spread_high"].dropna()
                             lo = df["spread_low"].dropna()
                             if len(hi) and len(lo):
-                                all_highs.append(float(hi.max()))
-                                all_lows.append(float(lo.min()))
+                                day_hi.append(float(hi.max()))
+                                day_lo.append(float(lo.min()))
 
-                    results[key] = {
-                        "high": round(max(all_highs), 2) if all_highs else None,
-                        "low":  round(min(all_lows),  2) if all_lows  else None,
-                        "days_used": len(all_highs),
-                    }
+                    def summarise(n):
+                        h, l = day_hi[:n], day_lo[:n]
+                        return {
+                            "high": round(max(h), 2) if h else None,
+                            "low":  round(min(l), 2) if l else None,
+                            "days_used": len(h),
+                        }
+
+                    ranges_3d[key] = summarise(3)
+                    ranges_5d[key] = summarise(5)
                 except Exception as inner:
                     print(f"[Range] {key} failed: {inner}")
-                    results[key] = {"high": None, "low": None, "days_used": 0}
+                    empty = {"high": None, "low": None, "days_used": 0}
+                    ranges_3d[key] = dict(empty)
+                    ranges_5d[key] = dict(empty)
 
-        return {"ranges": results, "days": body.days}
+        primary = ranges_5d if body.days >= 5 else ranges_3d
+        return {"ranges": primary, "ranges_3d": ranges_3d, "ranges_5d": ranges_5d, "days": body.days}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
