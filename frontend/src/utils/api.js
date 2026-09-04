@@ -4,15 +4,30 @@ const BASE_URL = import.meta.env.VITE_API_URL || '/api'
 
 const api = axios.create({
   baseURL: BASE_URL,
-  timeout: 15000,
+  timeout: 30000,  // increased to 30s to handle Render cold starts
 })
+
+// ── Retry helper ──────────────────────────────────────────────────────────────
+// Retries a function up to `retries` times with exponential backoff
+async function withRetry(fn, retries = 3, delayMs = 2000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      const isLast = attempt === retries
+      if (isLast) throw err
+      // Exponential backoff: 2s, 4s, 8s
+      await new Promise(r => setTimeout(r, delayMs * attempt))
+    }
+  }
+}
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export const getLoginUrl = () =>
-  api.get('/auth/login-url').then(r => r.data.url)
+  withRetry(() => api.get('/auth/login-url').then(r => r.data.url))
 
 export const generateToken = (authCode) =>
-  api.post('/auth/token', { auth_code: authCode }).then(r => r.data)
+  withRetry(() => api.post('/auth/token', { auth_code: authCode }).then(r => r.data))
 
 export const extractAuthCode = (url) =>
   api.get('/auth/extract-code', { params: { url } }).then(r => r.data)
