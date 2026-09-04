@@ -341,23 +341,66 @@ def load_config(user_id: str = "default", authorization: str = Header(None)):
 
 @router.get("/atm/{index}")
 def get_atm(index: str, addon: int = 100, authorization: str = Header(None)):
+    """
+    Resolve the ATM strike from the live spot price.
+    Surfaces the real Fyers error instead of flattening everything into a 404,
+    so quota exhaustion and token expiry are distinguishable in the logs.
+    """
+    import time
     fyers = _get_fyers(authorization)
     try:
         from services.fyers_service import INDEX_SYMBOL, round_to_nearest
+
         sym = INDEX_SYMBOL.get(index.upper())
         if not sym:
             raise HTTPException(status_code=404, detail=f"Unknown index: {index}")
-        resp = fyers.quotes(data={"symbols": sym})
-        if resp.get("s") == "ok":
-            v   = resp["d"][0].get("v", {})
-            ltp = float(v.get("lp") or v.get("last_price") or 0)
-            if ltp > 0:
-                atm = round_to_nearest(ltp, addon)
-                return {"spot": ltp, "atm": atm}
-        raise HTTPException(status_code=404, detail="Could not fetch spot price")
+
+        last = None
+        for attempt in range(3):
+            resp = fyers.quotes(data={"symbols": sym})
+            last = resp
+
+            if resp.get("s") == "ok":
+                v = (resp.get("d") or [{}])[0].get("v", {})
+                ltp = float(v.get("lp") or v.get("last_price") or 0)
+                if ltp > 0:
+                    return {"spot": ltp, "atm": round_to_nearest(ltp, addon)}
+                print(f"[ATM] {index} returned ok but ltp=0 (market closed?)")
+                break
+
+            code = resp.get("code")
+            msg  = resp.get("message", "")
+            print(f"[ATM] {index} attempt {attempt+1}/3 -> code={code} msg={msg}")
+
+            # 429 = rate limited, worth retrying. Auth errors are not.
+            if code == 429 or "limit" in str(msg).lower():
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            break
+
+        code = (last or {}).get("code")
+        msg  = (last or {}).get("message", "no message")
+
+        if code == 429 or "limit" in str(msg).lower():
+            raise HTTPException(
+                status_code=429,
+                detail=f"Fyers rate limit reached while fetching {index} spot. "
+                       f"Wait a few minutes and retry. ({msg})"
+            )
+        if code in (401, 403) or "token" in str(msg).lower() or "auth" in str(msg).lower():
+            raise HTTPException(
+                status_code=401,
+                detail=f"Fyers token rejected — please log in again. ({msg})"
+            )
+
+        raise HTTPException(
+            status_code=404,
+            detail=f"Could not fetch {index} spot price. Fyers said: code={code} {msg}"
+        )
     except HTTPException:
         raise
     except Exception as e:
+        print(f"[ATM] {index} unexpected error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
