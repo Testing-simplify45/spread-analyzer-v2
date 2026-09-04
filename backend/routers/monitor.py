@@ -328,7 +328,7 @@ def fetch_prev_close(body: FetchLiveRequest, authorization: str = Header(None)):
                 if is_butterfly:
                     sym3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, opt_type)
 
-                df = compute_spread_series(fyers, sym1, sym2, yesterday, 1.0, "1", sym3=sym3,
+                df = compute_spread_series(fyers, sym1, sym2, yesterday, resolution="1", sym3=sym3,
                                            strategy=body.strategy, ratio=body.ratio, multiplier=body.multiplier)
                 key = f"{l1_strike}_{opt_type}"
                 results[key] = round(float(df["spread"].iloc[-1]), 2) if not df.empty else None
@@ -382,7 +382,7 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
                 for d in trading_days:
                     if len(all_highs) >= body.days:
                         break
-                    df = compute_spread_series(fyers, sym1, sym2, d, 1.0, "1", sym3=sym3,
+                    df = compute_spread_series(fyers, sym1, sym2, d, resolution="1", sym3=sym3,
                                                strategy=body.strategy, ratio=body.ratio, multiplier=body.multiplier)
                     if not df.empty:
                         spreads = df["spread"].dropna().values
