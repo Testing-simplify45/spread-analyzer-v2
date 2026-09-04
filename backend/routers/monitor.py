@@ -350,12 +350,17 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
         results = {}
 
         def prev_trading_days(n: int) -> list:
+            """Return up to n*4 previous trading days to ensure enough data."""
             days_list = []
             d = date.today() - timedelta(days=1)  # start from yesterday
-            while len(days_list) < n:
-                if d.weekday() < 5:  # Mon-Fri only
+            # Look back up to n*4 trading days to find enough candles
+            max_days = n * 4 * 2  # generous lookback
+            attempts = 0
+            while len(days_list) < n * 4 and attempts < max_days:
+                if d.weekday() < 5:
                     days_list.append(d)
                 d -= timedelta(days=1)
+                attempts += 1
             return days_list
 
         is_multi_idx = body.strategy in ("nfo_bfo", "butterfly_nfo")
