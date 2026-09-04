@@ -75,6 +75,78 @@ def derive_l2_strike(l1_strike: int, multiplier: float) -> int:
     return round_to_nearest_50(l1_strike / multiplier)
 
 
+def spread_series_multi(fyers, sym1, sym2, trade_date, strategy, ratio,
+                        sym3=None, sym2b=None, resolution="1"):
+    """
+    Build a spread series for any strategy using raw candles.
+    Returns a DataFrame with 'spread', 'spread_high', 'spread_low' columns.
+    Uses true high/low legs so the range reflects real intraday extremes.
+    """
+    import pandas as pd
+    from services.fyers_service import get_candles
+
+    df1 = get_candles(fyers, sym1, trade_date, resolution)
+    df2 = get_candles(fyers, sym2, trade_date, resolution)
+    if df1.empty or df2.empty:
+        return pd.DataFrame()
+
+    df1 = df1[~df1.index.duplicated(keep="last")]
+    df2 = df2[~df2.index.duplicated(keep="last")]
+    common = df1.index.intersection(df2.index)
+
+    df3 = df2b = None
+    if sym3:
+        df3 = get_candles(fyers, sym3, trade_date, resolution)
+        if df3.empty:
+            return pd.DataFrame()
+        df3 = df3[~df3.index.duplicated(keep="last")]
+        common = common.intersection(df3.index)
+    if sym2b:
+        df2b = get_candles(fyers, sym2b, trade_date, resolution)
+        if df2b.empty:
+            return pd.DataFrame()
+        df2b = df2b[~df2b.index.duplicated(keep="last")]
+        common = common.intersection(df2b.index)
+
+    if common.empty:
+        return pd.DataFrame()
+
+    r = ratio or 1.0
+    c1, h1, l1 = df1.loc[common, "close"], df1.loc[common, "high"], df1.loc[common, "low"]
+    c2, h2, l2 = df2.loc[common, "close"], df2.loc[common, "high"], df2.loc[common, "low"]
+
+    # For butterfly_nfo, average the two L2 legs
+    if df2b is not None:
+        c2 = (c2 + df2b.loc[common, "close"]) / 2
+        h2 = (h2 + df2b.loc[common, "high"])  / 2
+        l2 = (l2 + df2b.loc[common, "low"])   / 2
+
+    if strategy in ("index_p1", "index_p2", "nfo_bfo"):
+        spread      = c1 - c2 * r
+        spread_high = h1 - l2 * r
+        spread_low  = l1 - h2 * r
+    elif strategy == "butterfly_index":
+        c3, h3, l3 = df3.loc[common, "close"], df3.loc[common, "high"], df3.loc[common, "low"]
+        spread      = c1 - (c2 * r) - (c2 * r) + c3
+        spread_high = h1 - (l2 * r) - (l2 * r) + h3
+        spread_low  = l1 - (h2 * r) - (h2 * r) + l3
+    elif strategy == "butterfly_nfo":
+        # [L1 - (L2*r)] + [L3 - (L2*r)]
+        c3, h3, l3 = df3.loc[common, "close"], df3.loc[common, "high"], df3.loc[common, "low"]
+        spread      = (c1 - c2 * r) + (c3 - c2 * r)
+        spread_high = (h1 - l2 * r) + (h3 - l2 * r)
+        spread_low  = (l1 - h2 * r) + (l3 - h2 * r)
+    else:
+        return pd.DataFrame()
+
+    return pd.DataFrame({
+        "timestamp":   common,
+        "spread":      spread.values,
+        "spread_high": spread_high.values,
+        "spread_low":  spread_low.values,
+    })
+
+
 class MonitorSection(BaseModel):
     id:           str
     exchange:     str   = "NSE"
@@ -319,19 +391,25 @@ def fetch_prev_close(body: FetchLiveRequest, authorization: str = Header(None)):
 
         for opt_type, l1_strikes in [("CE", body.ce_strikes), ("PE", body.pe_strikes)]:
             for l1_strike in l1_strikes:
-                l2_strike = derive_l2_strike(l1_strike, body.multiplier) if is_multi_idx else l1_strike
-                exp_l2    = body.exp_l2a if is_multi_idx and body.exp_l2a else body.exp2
-
-                sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
-                sym2 = build_symbol(body.exchange2, body.index2, exp_l2, l2_strike, opt_type)
-                sym3 = None
-                if is_butterfly:
-                    sym3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, opt_type)
-
-                df = compute_spread_series(fyers, sym1, sym2, yesterday, resolution="1", sym3=sym3,
-                                           strategy=body.strategy, ratio=body.ratio, multiplier=body.multiplier)
                 key = f"{l1_strike}_{opt_type}"
-                results[key] = round(float(df["spread"].iloc[-1]), 2) if not df.empty else None
+                try:
+                    l2_strike = derive_l2_strike(l1_strike, body.multiplier) if is_multi_idx else l1_strike
+                    exp_l2    = body.exp_l2a if is_multi_idx and body.exp_l2a else body.exp2
+
+                    sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
+                    sym2 = build_symbol(body.exchange2, body.index2, exp_l2, l2_strike, opt_type)
+                    sym3 = sym2b = None
+                    if is_butterfly:
+                        sym3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, opt_type)
+                        if is_multi_idx and body.exp_l2b:
+                            sym2b = build_symbol(body.exchange2, body.index2, body.exp_l2b, l2_strike, opt_type)
+
+                    df = spread_series_multi(fyers, sym1, sym2, yesterday,
+                                             body.strategy, body.ratio, sym3=sym3, sym2b=sym2b)
+                    results[key] = round(float(df["spread"].iloc[-1]), 2) if not df.empty else None
+                except Exception as inner:
+                    print(f"[PrevClose] {key} failed: {inner}")
+                    results[key] = None
 
         return {"prev_close": results}
     except Exception as e:
@@ -350,13 +428,13 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
         results = {}
 
         def prev_trading_days(n: int) -> list:
-            """Return up to n*4 previous trading days to ensure enough data."""
+            """Return previous trading days (excluding today), with a small buffer
+            for holidays. Kept modest to avoid hitting Fyers rate limits."""
             days_list = []
-            d = date.today() - timedelta(days=1)  # start from yesterday
-            # Look back up to n*4 trading days to find enough candles
-            max_days = n * 4 * 2  # generous lookback
+            d = date.today() - timedelta(days=1)  # never include today
+            target   = n + 3      # small buffer for holidays
             attempts = 0
-            while len(days_list) < n * 4 and attempts < max_days:
+            while len(days_list) < target and attempts < 30:
                 if d.weekday() < 5:
                     days_list.append(d)
                 d -= timedelta(days=1)
@@ -365,37 +443,45 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
 
         is_multi_idx = body.strategy in ("nfo_bfo", "butterfly_nfo")
 
+        # Cache candles per day so 3D and 5D don't refetch the same days
+        trading_days = prev_trading_days(body.days)
+
         for opt_type, l1_strikes in [("CE", body.ce_strikes), ("PE", body.pe_strikes)]:
             for l1_strike in l1_strikes:
-                l2_strike = derive_l2_strike(l1_strike, body.multiplier) if is_multi_idx else l1_strike
-                exp_l2    = body.exp_l2a if is_multi_idx and body.exp_l2a else body.exp2
-
-                sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
-                sym2 = build_symbol(body.exchange2, body.index2, exp_l2, l2_strike, opt_type)
-                sym3 = None
-                if is_butterfly:
-                    sym3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, opt_type)
-
-                all_highs, all_lows = [], []
-                trading_days = prev_trading_days(body.days * 2)
-
-                for d in trading_days:
-                    if len(all_highs) >= body.days:
-                        break
-                    df = compute_spread_series(fyers, sym1, sym2, d, resolution="1", sym3=sym3,
-                                               strategy=body.strategy, ratio=body.ratio, multiplier=body.multiplier)
-                    if not df.empty:
-                        spreads = df["spread"].dropna().values
-                        if len(spreads):
-                            all_highs.append(float(spreads.max()))
-                            all_lows.append(float(spreads.min()))
-
                 key = f"{l1_strike}_{opt_type}"
-                results[key] = {
-                    "high": round(max(all_highs), 2) if all_highs else None,
-                    "low":  round(min(all_lows),  2) if all_lows  else None,
-                    "days_used": len(all_highs),
-                }
+                try:
+                    l2_strike = derive_l2_strike(l1_strike, body.multiplier) if is_multi_idx else l1_strike
+                    exp_l2    = body.exp_l2a if is_multi_idx and body.exp_l2a else body.exp2
+
+                    sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
+                    sym2 = build_symbol(body.exchange2, body.index2, exp_l2, l2_strike, opt_type)
+                    sym3 = sym2b = None
+                    if is_butterfly:
+                        sym3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, opt_type)
+                        if is_multi_idx and body.exp_l2b:
+                            sym2b = build_symbol(body.exchange2, body.index2, body.exp_l2b, l2_strike, opt_type)
+
+                    all_highs, all_lows = [], []
+                    for d in trading_days:
+                        if len(all_highs) >= body.days:
+                            break
+                        df = spread_series_multi(fyers, sym1, sym2, d,
+                                                 body.strategy, body.ratio, sym3=sym3, sym2b=sym2b)
+                        if not df.empty:
+                            hi = df["spread_high"].dropna()
+                            lo = df["spread_low"].dropna()
+                            if len(hi) and len(lo):
+                                all_highs.append(float(hi.max()))
+                                all_lows.append(float(lo.min()))
+
+                    results[key] = {
+                        "high": round(max(all_highs), 2) if all_highs else None,
+                        "low":  round(min(all_lows),  2) if all_lows  else None,
+                        "days_used": len(all_highs),
+                    }
+                except Exception as inner:
+                    print(f"[Range] {key} failed: {inner}")
+                    results[key] = {"high": None, "low": None, "days_used": 0}
 
         return {"ranges": results, "days": body.days}
     except Exception as e:
