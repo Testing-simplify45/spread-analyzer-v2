@@ -364,6 +364,61 @@ def run_monitor_cycle():
             if not atm:
                 continue
 
+            # Auto-fetch 3D ranges if not saved yet
+            if not d3_ranges:
+                print(f"[Monitor] d3_ranges empty for {index} {exp1}-{exp2}, auto-fetching...")
+                try:
+                    from services.fyers_service import build_symbol, compute_spread_series
+                    from datetime import date as _date
+                    strike_map_tmp = generate_strikes(strategy, atm, addon)
+                    auto_ranges = {}
+                    for ot, strikes_tmp in [("CE", strike_map_tmp["ce"]), ("PE", strike_map_tmp["pe"])]:
+                        for s in strikes_tmp:
+                            all_h, all_l = [], []
+                            d = _date.today() - timedelta(days=1)
+                            attempts = 0
+                            while len(all_h) < 3 and attempts < 20:
+                                if d.weekday() < 5:
+                                    sym1 = build_symbol(exchange, index, exp1, s, ot)
+                                    sym2 = build_symbol(exchange, index, exp2, s, ot)
+                                    df = compute_spread_series(fyers, sym1, sym2, d, 1.0, "1",
+                                                               strategy=strategy, ratio=ratio, multiplier=multiplier)
+                                    if not df.empty:
+                                        spreads = df["spread"].dropna().values
+                                        if len(spreads):
+                                            all_h.append(float(spreads.max()))
+                                            all_l.append(float(spreads.min()))
+                                d -= timedelta(days=1)
+                                attempts += 1
+                            if all_h:
+                                auto_ranges[f"{s}_{ot}"] = {
+                                    "high": round(max(all_h), 2),
+                                    "low":  round(min(all_l), 2),
+                                    "days_used": len(all_h),
+                                }
+                    d3_ranges = auto_ranges
+                    print(f"[Monitor] Auto-fetched 3D ranges for {index}: {len(d3_ranges)} strikes")
+                    # Save back to Supabase so future cycles use cached ranges
+                    try:
+                        from services.supabase_service import get_supabase
+                        sb = get_supabase()
+                        rows = sb.table("monitor_configs").select("id,sections").execute()
+                        for row in (rows.data or []):
+                            updated_sections = []
+                            changed = False
+                            for sec in (row.get("sections") or []):
+                                if sec.get("exp1") == exp1 and sec.get("exp2") == exp2 and sec.get("index") == index:
+                                    sec["d3_ranges"] = auto_ranges
+                                    changed = True
+                                updated_sections.append(sec)
+                            if changed:
+                                sb.table("monitor_configs").update({"sections": updated_sections}).eq("id", row["id"]).execute()
+                                print(f"[Monitor] Saved auto-ranges to Supabase for {index}")
+                    except Exception as se:
+                        print(f"[Monitor] Could not save auto-ranges: {se}")
+                except Exception as re:
+                    print(f"[Monitor] Auto-range fetch failed: {re}")
+
             strategy     = section.get("strategy",     "index_p1")
             ratio        = float(section.get("ratio",        1.0))
             multiplier   = float(section.get("multiplier",   3.3))
