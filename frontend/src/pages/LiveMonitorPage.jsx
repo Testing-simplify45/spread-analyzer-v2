@@ -122,6 +122,7 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
   const [loadingAtm,   setLoadingAtm]   = useState(false)
   const [loadingLive,  setLoadingLive]  = useState(false)
   const [loadingRange, setLoadingRange] = useState(false)
+  const [errMsg,       setErrMsg]       = useState('')
   const [d3Ranges,     setD3Ranges]     = useState(section.d3_ranges || {})
   const [d5Ranges,     setD5Ranges]     = useState({})
   const [prevClose,    setPrevClose]    = useState({})
@@ -159,6 +160,7 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
   // Fetch ATM for L1 index and compute strikes
   const fetchAtmAndStrikes = useCallback(async () => {
     setLoadingAtm(true)
+    setErrMsg('')
     try {
       const res = await axios.get(`${BASE_URL}/monitor/atm/${index1}`, {
         params: { addon: section.addon },
@@ -170,7 +172,16 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
       setCeStrikes(ce)
       setPeStrikes(pe)
       return { atm: atmVal, ce, pe }
-    } catch (e) { console.error(e); return null }
+    } catch (e) {
+      // Show the backend's reason rather than failing silently
+      const status = e?.response?.status
+      const detail = e?.response?.data?.detail
+      if (status === 429)      setErrMsg(detail || 'Fyers rate limit reached — wait a few minutes.')
+      else if (status === 401) setErrMsg(detail || 'Session expired — please log in again.')
+      else                     setErrMsg(detail || `Could not fetch ${index1} spot price.`)
+      console.error(e)
+      return null
+    }
     finally { setLoadingAtm(false) }
   }, [index1, section.addon, strategy, authHeader])
 
@@ -527,6 +538,14 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
           </div>
         </div>
       </div>
+
+      {/* Error banner */}
+      {errMsg && (
+        <div className="flex items-start gap-2 px-3 py-2 mb-3 rounded-lg bg-crimson/10 border border-crimson/25">
+          <span className="text-crimson text-xs mt-0.5">⚠</span>
+          <p className="text-[11px] font-mono text-crimson/90 leading-relaxed">{errMsg}</p>
+        </div>
+      )}
 
       {/* Status bar */}
       {(ceStrikes.length > 0 || peStrikes.length > 0) && (
