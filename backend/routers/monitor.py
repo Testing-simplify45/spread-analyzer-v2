@@ -37,10 +37,14 @@ def get_supabase():
 
 # ── Formula ───────────────────────────────────────────────────────────────────
 
-def compute_spread(strategy: str, ltp1, ltp2, ltp3, ratio: float, multiplier: float):
-    """Compute spread value based on strategy."""
+def compute_spread(strategy: str, ltp1, ltp2, ltp3, ratio: float, multiplier: float = 3.3):
+    """
+    Compute spread value based on strategy.
+    NFO/BFO:       L1 - (L2 * ratio)
+    Butterfly NFO: [L1 - (L2*ratio)] + [L3 - (L2*ratio)]
+    For NFO/BFO: L2 strike is derived from L1/multiplier rounded to nearest 50
+    """
     r = ratio or 1.0
-    m = multiplier or 3.3
     if ltp1 is None:
         return None
     if strategy in ("index_p1", "index_p2"):
@@ -48,34 +52,50 @@ def compute_spread(strategy: str, ltp1, ltp2, ltp3, ratio: float, multiplier: fl
         return round(ltp1 - (ltp2 * r), 2)
     elif strategy == "nfo_bfo":
         if ltp2 is None: return None
-        return round(ltp1 - (ltp2 * m * r), 2)
+        return round(ltp1 - (ltp2 * r), 2)
     elif strategy == "butterfly_index":
         if ltp2 is None or ltp3 is None: return None
         return round(ltp1 - (ltp2 * r) - (ltp2 * r) + ltp3, 2)
     elif strategy == "butterfly_nfo":
+        # [L1 - (L2*ratio)] + [L3 - (L2*ratio)]
         if ltp2 is None or ltp3 is None: return None
-        return round(ltp1 - (ltp2 * m * r) - (ltp2 * m * r) + ltp3, 2)
+        return round((ltp1 - (ltp2 * r)) + (ltp3 - (ltp2 * r)), 2)
     return None
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
 
+def round_to_nearest_50(value: float) -> int:
+    """Round a value to the nearest 50."""
+    return int(round(value / 50) * 50)
+
+
+def derive_l2_strike(l1_strike: int, multiplier: float) -> int:
+    """Derive L2 strike from L1 using multiplier, rounded to nearest 50."""
+    return round_to_nearest_50(l1_strike / multiplier)
+
+
 class MonitorSection(BaseModel):
-    id:          str
-    exchange:    str   = "NSE"
-    index:       str   = "NIFTY"
-    strategy:    str   = "index_p1"
-    exp1:        str   = ""
-    exp1_label:  str   = ""
-    exp2:        str   = ""
-    exp2_label:  str   = ""
-    exp3:        str   = ""
-    exp3_label:  str   = ""
-    addon:       int   = 100
-    ratio:       float = 1.0
-    multiplier:  float = 3.3
-    interval:    int   = 100
-    d3_ranges:   dict  = {}
+    id:           str
+    exchange:     str   = "NSE"
+    index:        str   = "NIFTY"
+    index2:       str   = "NIFTY"       # L2 index for multi-index strategies
+    strategy:     str   = "index_p1"
+    exp1:         str   = ""
+    exp1_label:   str   = ""
+    exp2:         str   = ""
+    exp2_label:   str   = ""
+    exp3:         str   = ""
+    exp3_label:   str   = ""
+    exp_l2a:      str   = ""            # L2 near expiry (multi-index)
+    exp_l2b:      str   = ""            # L2 far expiry (butterfly multi-index)
+    addon:        int   = 100
+    ratio:        float = 1.0
+    multiplier:   float = 3.3
+    interval:     int   = 100
+    pc_mode:      str   = "default"     # 'default' | 'custom'
+    pc_threshold: float = 10.0
+    d3_ranges:    dict  = {}
 
 
 class SaveConfigRequest(BaseModel):
@@ -84,11 +104,15 @@ class SaveConfigRequest(BaseModel):
 
 
 class FetchLiveRequest(BaseModel):
-    exchange:   str
-    index:      str
-    exp1:       str
-    exp2:       str
+    exchange1:  str   = "NSE"
+    exchange2:  str   = "NSE"
+    index1:     str   = "NIFTY"
+    index2:     str   = "NIFTY"
+    exp1:       str   = ""
+    exp2:       str   = ""
     exp3:       str   = ""
+    exp_l2a:    str   = ""
+    exp_l2b:    str   = ""
     addon:      int   = 100
     ce_strikes: list[int] = []
     pe_strikes: list[int] = []
@@ -99,11 +123,15 @@ class FetchLiveRequest(BaseModel):
 
 
 class FetchRangeRequest(BaseModel):
-    exchange:   str
-    index:      str
-    exp1:       str
-    exp2:       str
+    exchange1:  str   = "NSE"
+    exchange2:  str   = "NSE"
+    index1:     str   = "NIFTY"
+    index2:     str   = "NIFTY"
+    exp1:       str   = ""
+    exp2:       str   = ""
     exp3:       str   = ""
+    exp_l2a:    str   = ""
+    exp_l2b:    str   = ""
     ce_strikes: list[int] = []
     pe_strikes: list[int] = []
     strategy:   str   = "index_p1"
@@ -198,44 +226,71 @@ def fetch_live_spreads(body: FetchLiveRequest, authorization: str = Header(None)
     try:
         from services.fyers_service import build_symbol, get_batch_ltp
 
-        exchange   = body.exchange
-        index      = body.index
-        strategy   = body.strategy
-        ratio      = body.ratio
-        multiplier = body.multiplier
+        strategy     = body.strategy
+        ratio        = body.ratio
+        multiplier   = body.multiplier
         is_butterfly = strategy in ("butterfly_index", "butterfly_nfo")
+        is_multi_idx = strategy in ("nfo_bfo", "butterfly_nfo")
 
-        # Build all symbols
+        # For multi-index: L1/L3 use index1, L2 uses index2 with derived strike
+        # For single-index: all legs use index1
+
         all_syms = []
         sym_maps = {"ce": {}, "pe": {}}
 
-        for opt_type, strikes in [("ce", body.ce_strikes), ("pe", body.pe_strikes)]:
+        for opt_type, l1_strikes in [("ce", body.ce_strikes), ("pe", body.pe_strikes)]:
             OT = opt_type.upper()
-            for strike in strikes:
-                s1 = build_symbol(exchange, index, body.exp1, strike, OT)
-                s2 = build_symbol(exchange, index, body.exp2, strike, OT)
-                sym_maps[opt_type][strike] = {"s1": s1, "s2": s2}
+            for l1_strike in l1_strikes:
+                # L2 strike derived from L1 for multi-index strategies
+                l2_strike = derive_l2_strike(l1_strike, multiplier) if is_multi_idx else l1_strike
+
+                # L1 symbol
+                s1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, OT)
+                # L2 symbol — uses index2 and derived strike for multi-index
+                exp_l2 = body.exp_l2a if is_multi_idx and body.exp_l2a else body.exp2
+                s2 = build_symbol(body.exchange2, body.index2, exp_l2, l2_strike, OT)
+
+                sym_maps[opt_type][l1_strike] = {"s1": s1, "s2": s2, "l2_strike": l2_strike}
                 all_syms += [s1, s2]
-                if is_butterfly and body.exp3:
-                    s3 = build_symbol(exchange, index, body.exp3, strike, OT)
-                    sym_maps[opt_type][strike]["s3"] = s3
-                    all_syms.append(s3)
+
+                if is_butterfly:
+                    if is_multi_idx:
+                        # L3 = index1, exp3; L2b = index2 far
+                        s3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, OT)
+                        exp_l2b = body.exp_l2b if body.exp_l2b else exp_l2
+                        s2b = build_symbol(body.exchange2, body.index2, exp_l2b, l2_strike, OT)
+                        sym_maps[opt_type][l1_strike]["s3"]  = s3
+                        sym_maps[opt_type][l1_strike]["s2b"] = s2b
+                        all_syms += [s3, s2b]
+                    else:
+                        s3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, OT)
+                        sym_maps[opt_type][l1_strike]["s3"] = s3
+                        all_syms.append(s3)
 
         ltp_map = get_batch_ltp(fyers, list(set(all_syms)))
 
         results_ce, results_pe = [], []
-        for opt_type, strikes, results in [
+        for opt_type, l1_strikes, results in [
             ("ce", body.ce_strikes, results_ce),
             ("pe", body.pe_strikes, results_pe),
         ]:
-            for strike in strikes:
-                sm   = sym_maps[opt_type].get(strike, {})
+            for l1_strike in l1_strikes:
+                sm   = sym_maps[opt_type].get(l1_strike, {})
                 ltp1 = ltp_map.get(sm.get("s1"))
                 ltp2 = ltp_map.get(sm.get("s2"))
                 ltp3 = ltp_map.get(sm.get("s3")) if is_butterfly else None
+
+                # For butterfly_nfo: average L2 legs if both available
+                if strategy == "butterfly_nfo" and sm.get("s2b"):
+                    ltp2b = ltp_map.get(sm["s2b"])
+                    if ltp2 is not None and ltp2b is not None:
+                        ltp2 = (ltp2 + ltp2b) / 2  # average of near and far L2
+
                 current = compute_spread(strategy, ltp1, ltp2, ltp3, ratio, multiplier)
                 results.append({
-                    "strike": strike, "opt_type": opt_type.upper(),
+                    "strike": l1_strike,
+                    "l2_strike": sm.get("l2_strike"),
+                    "opt_type": opt_type.upper(),
                     "current": current,
                     "ltp1": ltp1, "ltp2": ltp2, "ltp3": ltp3,
                     "prev_close": None, "change": None,
@@ -258,21 +313,25 @@ def fetch_prev_close(body: FetchLiveRequest, authorization: str = Header(None)):
         while yesterday.weekday() >= 5:
             yesterday -= timedelta(days=1)
 
-        is_butterfly = body.strategy in ("butterfly_index", "butterfly_nfo")
+        is_butterfly  = body.strategy in ("butterfly_index", "butterfly_nfo")
+        is_multi_idx  = body.strategy in ("nfo_bfo", "butterfly_nfo")
         results = {}
 
-        for opt_type, strikes in [("CE", body.ce_strikes), ("PE", body.pe_strikes)]:
-            for strike in strikes:
-                sym1 = build_symbol(body.exchange, body.index, body.exp1, strike, opt_type)
-                sym2 = build_symbol(body.exchange, body.index, body.exp2, strike, opt_type)
-                sym3 = build_symbol(body.exchange, body.index, body.exp3, strike, opt_type) if is_butterfly and body.exp3 else None
+        for opt_type, l1_strikes in [("CE", body.ce_strikes), ("PE", body.pe_strikes)]:
+            for l1_strike in l1_strikes:
+                l2_strike = derive_l2_strike(l1_strike, body.multiplier) if is_multi_idx else l1_strike
+                exp_l2    = body.exp_l2a if is_multi_idx and body.exp_l2a else body.exp2
+
+                sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
+                sym2 = build_symbol(body.exchange2, body.index2, exp_l2, l2_strike, opt_type)
+                sym3 = None
+                if is_butterfly:
+                    sym3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, opt_type)
+
                 df = compute_spread_series(fyers, sym1, sym2, yesterday, 1.0, "1", sym3=sym3,
                                            strategy=body.strategy, ratio=body.ratio, multiplier=body.multiplier)
-                key = f"{strike}_{opt_type}"
-                if not df.empty:
-                    results[key] = round(float(df["spread"].iloc[-1]), 2)
-                else:
-                    results[key] = None
+                key = f"{l1_strike}_{opt_type}"
+                results[key] = round(float(df["spread"].iloc[-1]), 2) if not df.empty else None
 
         return {"prev_close": results}
     except Exception as e:
@@ -290,7 +349,6 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
         is_butterfly = body.strategy in ("butterfly_index", "butterfly_nfo")
         results = {}
 
-        # FIX 1: Start from yesterday — never include today's candle
         def prev_trading_days(n: int) -> list:
             days_list = []
             d = date.today() - timedelta(days=1)  # start from yesterday
@@ -300,21 +358,25 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
                 d -= timedelta(days=1)
             return days_list
 
-        for opt_type, strikes in [("CE", body.ce_strikes), ("PE", body.pe_strikes)]:
-            for strike in strikes:
-                sym1 = build_symbol(body.exchange, body.index, body.exp1, strike, opt_type)
-                sym2 = build_symbol(body.exchange, body.index, body.exp2, strike, opt_type)
-                sym3 = build_symbol(body.exchange, body.index, body.exp3, strike, opt_type) if is_butterfly and body.exp3 else None
+        is_multi_idx = body.strategy in ("nfo_bfo", "butterfly_nfo")
+
+        for opt_type, l1_strikes in [("CE", body.ce_strikes), ("PE", body.pe_strikes)]:
+            for l1_strike in l1_strikes:
+                l2_strike = derive_l2_strike(l1_strike, body.multiplier) if is_multi_idx else l1_strike
+                exp_l2    = body.exp_l2a if is_multi_idx and body.exp_l2a else body.exp2
+
+                sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
+                sym2 = build_symbol(body.exchange2, body.index2, exp_l2, l2_strike, opt_type)
+                sym3 = None
+                if is_butterfly:
+                    sym3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, opt_type)
 
                 all_highs, all_lows = [], []
-
-                # FIX 2: Try up to body.days but use whatever data is available
-                # Try up to 2x days to find enough candles with real data
                 trading_days = prev_trading_days(body.days * 2)
 
                 for d in trading_days:
                     if len(all_highs) >= body.days:
-                        break  # collected enough days with real data
+                        break
                     df = compute_spread_series(fyers, sym1, sym2, d, 1.0, "1", sym3=sym3,
                                                strategy=body.strategy, ratio=body.ratio, multiplier=body.multiplier)
                     if not df.empty:
@@ -323,12 +385,11 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
                             all_highs.append(float(spreads.max()))
                             all_lows.append(float(spreads.min()))
 
-                key = f"{strike}_{opt_type}"
-                # FIX 2: Return whatever we have (even if < requested days) instead of None
+                key = f"{l1_strike}_{opt_type}"
                 results[key] = {
                     "high": round(max(all_highs), 2) if all_highs else None,
                     "low":  round(min(all_lows),  2) if all_lows  else None,
-                    "days_used": len(all_highs),  # so frontend knows how many days were used
+                    "days_used": len(all_highs),
                 }
 
         return {"ranges": results, "days": body.days}
