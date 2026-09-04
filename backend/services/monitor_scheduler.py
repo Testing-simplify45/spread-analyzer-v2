@@ -355,6 +355,9 @@ def run_monitor_cycle():
             exp2     = section.get("exp2",     "")
             addon    = int(section.get("addon", 100))
             d3_ranges = section.get("d3_ranges", {})  # pre-computed ranges
+            strategy     = section.get("strategy",     "index_p1")
+            ratio        = float(section.get("ratio",        1.0))
+            multiplier   = float(section.get("multiplier",   3.3))
 
             if not exp1 or not exp2:
                 continue
@@ -381,7 +384,7 @@ def run_monitor_cycle():
                                 if d.weekday() < 5:
                                     sym1 = build_symbol(exchange, index, exp1, s, ot)
                                     sym2 = build_symbol(exchange, index, exp2, s, ot)
-                                    df = compute_spread_series(fyers, sym1, sym2, d, 1.0, "1",
+                                    df = compute_spread_series(fyers, sym1, sym2, d, resolution="1",
                                                                strategy=strategy, ratio=ratio, multiplier=multiplier)
                                     if not df.empty:
                                         spreads = df["spread"].dropna().values
@@ -419,9 +422,6 @@ def run_monitor_cycle():
                 except Exception as re:
                     print(f"[Monitor] Auto-range fetch failed: {re}")
 
-            strategy     = section.get("strategy",     "index_p1")
-            ratio        = float(section.get("ratio",        1.0))
-            multiplier   = float(section.get("multiplier",   3.3))
             exp3         = section.get("exp3",    "")
             index2       = section.get("index2",  index)
             exchange2    = {"NIFTY":"NSE","BANKNIFTY":"NSE","FINNIFTY":"NSE","MIDCPNIFTY":"NSE","SENSEX":"BSE","BANKEX":"BSE"}.get(index2, "NSE")
