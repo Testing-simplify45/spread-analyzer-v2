@@ -6,6 +6,7 @@ import { getLoginUrl, generateToken } from '../utils/api'
 export default function LoginPage() {
   const [loading, setLoading]   = useState(false)
   const [error, setError]       = useState('')
+  const [retryCount, setRetryCount] = useState(0)
   const { login }               = useAuthStore()
   const navigate                = useNavigate()
   const [searchParams]          = useSearchParams()
@@ -22,10 +23,11 @@ export default function LoginPage() {
     try {
       setLoading(true)
       setError('')
+      setRetryCount(0)
       const url = await getLoginUrl()
       window.location.href = url
     } catch {
-      setError('Failed to connect. Please try again.')
+      setError('Server is waking up, please try again in a moment.')
       setLoading(false)
     }
   }
@@ -33,12 +35,17 @@ export default function LoginPage() {
   const handleTokenExchange = async (code) => {
     try {
       setLoading(true)
+      setError('')
+      // Show friendly message if it takes long (Render cold start)
+      const timer = setTimeout(() => {
+        setError('Server is starting up, please wait...')
+      }, 8000)
       const data = await generateToken(code)
+      clearTimeout(timer)
       login(data.access_token, data.client_id)
-      // After Fyers auth → go to password page
       navigate('/auth/password', { replace: true })
     } catch {
-      setError('Authentication failed. Please try again.')
+      setError('Authentication failed — server may be starting up. Please click Login again.')
       setLoading(false)
     }
   }
@@ -81,7 +88,7 @@ export default function LoginPage() {
             <button
               onClick={handleLogin}
               disabled={loading}
-              className="w-full py-3 rounded-xl bg-blue text-white font-semibold hover:bg-blue/90 transition-all flex items-center justify-center gap-3 active:scale-[0.98] text-sm"
+              className="w-full py-3 rounded-xl bg-blue text-white font-semibold hover:bg-blue/90 transition-all flex items-center justify-center gap-3 active:scale-[0.98] text-sm disabled:opacity-70"
             >
               {loading ? (
                 <span className="flex items-center gap-2">
@@ -89,9 +96,9 @@ export default function LoginPage() {
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                   </svg>
-                  Connecting...
+                  Connecting... (may take up to 30s on first load)
                 </span>
-              ) : 'Login'}
+              ) : error ? 'Try Again' : 'Login'}
             </button>
 
           </div>
