@@ -286,11 +286,20 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
     const result = await fetchAtmAndStrikes()
     if (!result) return
     const { ce, pe } = result
+
     await fetchPrevClose(ce, pe)
     await fetchLive(ce, pe)
+
+    // Start should fill the whole table. Ranges come from the same cached
+    // candle window as prev close, so this costs little extra.
+    if (!Object.keys(d3Ranges).length) {
+      await fetchRange(ce, pe)
+    }
+
     if (intervalRef.current) clearInterval(intervalRef.current)
     intervalRef.current = setInterval(() => fetchLive(ce, pe), 30000)
-  }, [section, isButterfly, isMultiIndex, fetchAtmAndStrikes, fetchPrevClose, fetchLive])
+  }, [section, isButterfly, isMultiIndex, fetchAtmAndStrikes, fetchPrevClose,
+      fetchLive, fetchRange, d3Ranges])
 
   useImperativeHandle(ref, () => ({ handleStart, fetchRange: () => fetchRange() }), [handleStart, fetchRange])
   useEffect(() => { return () => { if (intervalRef.current) clearInterval(intervalRef.current) } }, [])
@@ -638,8 +647,9 @@ export default function LiveMonitorPage() {
   const handleStartAll = async () => {
     setStartingAll(true)
     for (const s of sections) {
+      // handleStart now also pulls ranges, so allow a little more spacing
       try { await sectionRefs.current[s.id]?.handleStart() } catch (e) { console.error(e) }
-      await pause(800)
+      await pause(1200)
     }
     setStartingAll(false)
   }
