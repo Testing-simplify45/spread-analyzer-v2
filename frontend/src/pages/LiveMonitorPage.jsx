@@ -237,12 +237,15 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
     if ((!ce.length && !pe.length) || !section.exp1 || !section.exp2) return
     setLoadingRange(true)
     try {
-      const [r3, r5] = await Promise.all([
-        axios.post(`${BASE_URL}/monitor/range`, buildPayload(ce, pe, { days: 3 }), { headers: { Authorization: authHeader } }),
-        axios.post(`${BASE_URL}/monitor/range`, buildPayload(ce, pe, { days: 5 }), { headers: { Authorization: authHeader } }),
-      ])
-      const d3 = r3.data.ranges || {}
-      const d5 = r5.data.ranges || {}
+      // One request returns both 3D and 5D — the backend walks the days once,
+      // which keeps us well under the Fyers history rate limit.
+      const res = await axios.post(
+        `${BASE_URL}/monitor/range`,
+        buildPayload(ce, pe, { days: 5 }),
+        { headers: { Authorization: authHeader } }
+      )
+      const d3 = res.data.ranges_3d || {}
+      const d5 = res.data.ranges_5d || res.data.ranges || {}
       setD3Ranges(d3)
       setD5Ranges(d5)
       onUpdate({ ...section, d3_ranges: d3 })
@@ -595,14 +598,23 @@ export default function LiveMonitorPage() {
     finally { setSaving(false) }
   }
 
+  // Pause between sections so we don't burst the Fyers rate limit
+  const pause = (ms) => new Promise(r => setTimeout(r, ms))
+
   const handleStartAll = async () => {
     setStartingAll(true)
-    for (const s of sections) { try { await sectionRefs.current[s.id]?.handleStart() } catch (e) { console.error(e) } }
+    for (const s of sections) {
+      try { await sectionRefs.current[s.id]?.handleStart() } catch (e) { console.error(e) }
+      await pause(800)
+    }
     setStartingAll(false)
   }
   const handleRangeAll = async () => {
     setRangingAll(true)
-    for (const s of sections) { try { await sectionRefs.current[s.id]?.fetchRange() } catch (e) { console.error(e) } }
+    for (const s of sections) {
+      try { await sectionRefs.current[s.id]?.fetchRange() } catch (e) { console.error(e) }
+      await pause(1500)
+    }
     setRangingAll(false)
   }
 
