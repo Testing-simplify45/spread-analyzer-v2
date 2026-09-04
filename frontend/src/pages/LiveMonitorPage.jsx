@@ -238,8 +238,17 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
     try {
       const res = await axios.post(`${BASE_URL}/monitor/prev-close`, buildPayload(ce, pe),
         { headers: { Authorization: authHeader } })
-      setPrevClose(res.data.prev_close || {})
-    } catch (e) { console.error(e) }
+      const pc = res.data.prev_close || {}
+      setPrevClose(pc)
+      const anyFilled = Object.values(pc).some(v => v !== null && v !== undefined)
+      if (!anyFilled && Object.keys(pc).length) {
+        setErrMsg('Previous close unavailable — history API returned no candles.')
+      }
+    } catch (e) {
+      const detail = e?.response?.data?.detail
+      setErrMsg(detail || 'Previous close fetch failed.')
+      console.error(e)
+    }
   }, [ceStrikes, peStrikes, section, authHeader, strategy, ratio, multiplier])
 
   const fetchRange = useCallback(async (ceS, peS) => {
@@ -259,8 +268,14 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
       const d5 = res.data.ranges_5d || res.data.ranges || {}
       setD3Ranges(d3)
       setD5Ranges(d5)
+      if (res.data.warning) setErrMsg(res.data.warning)
+      else setErrMsg('')
       onUpdate({ ...section, d3_ranges: d3 })
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      const detail = e?.response?.data?.detail
+      setErrMsg(detail || 'Range fetch failed — see /api/monitor/diag for details.')
+      console.error(e)
+    }
     finally { setLoadingRange(false) }
   }, [ceStrikes, peStrikes, section, authHeader, strategy, ratio, multiplier, onUpdate])
 
