@@ -84,6 +84,7 @@ _range_cache: dict = {}
 _range_stamp: dict = {}
 _CACHE_TTL_SEC = 900          # completed sessions don't change
 _last_call_ts = [0.0]
+_last_candle_error = [None]   # last history failure, surfaced to the UI
 _MIN_GAP_SEC = 0.25           # spacing between history calls
 
 
@@ -120,8 +121,9 @@ def _fetch_candles_range(fyers, symbol: str, start_date, end_date, resolution: s
         if resp.get("s") != "ok":
             # Surface the reason instead of silently returning empty —
             # a 429 looks identical to "no data" otherwise.
-            print(f"[Candles] {symbol} {start_date}..{end_date} -> "
-                  f"{resp.get('code')} {resp.get('message')}")
+            code, msg = resp.get("code"), resp.get("message")
+            _last_candle_error[0] = f"Fyers history API: code={code} {msg}"
+            print(f"[Candles] {symbol} {start_date}..{end_date} -> {code} {msg}")
             return {}
 
         raw = resp.get("candles") or []
@@ -404,6 +406,84 @@ def get_atm(index: str, addon: int = 100, authorization: str = Header(None)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Diagnostics ───────────────────────────────────────────────────────────────
+
+@router.get("/diag")
+def diagnose(index: str = "NIFTY", exp1: str = "", strike: int = 0,
+             opt_type: str = "CE", authorization: str = Header(None)):
+    """
+    One-shot health check for the history API.
+    Makes a single-day call and a multi-day call for the same symbol and
+    returns Fyers' raw reply for each, so we can see exactly what is failing.
+    Example: /api/monitor/diag?index=NIFTY&exp1=25SEP&strike=24000&opt_type=CE
+    """
+    fyers = _get_fyers(authorization)
+    out = {}
+
+    try:
+        from services.fyers_service import build_symbol, INDEX_SYMBOL
+
+        # 1. Quotes — this is what /live uses and it currently works
+        spot_sym = INDEX_SYMBOL.get(index.upper())
+        q = fyers.quotes(data={"symbols": spot_sym})
+        out["quotes"] = {"symbol": spot_sym, "s": q.get("s"),
+                         "code": q.get("code"), "message": q.get("message")}
+
+        if not exp1 or not strike:
+            out["note"] = "Pass exp1 and strike to also test the history API."
+            return out
+
+        sym = build_symbol("NSE" if index.upper() != "SENSEX" else "BSE",
+                           index.upper(), exp1, strike, opt_type)
+        out["option_symbol"] = sym
+
+        # Most recent completed weekday
+        d = date.today() - timedelta(days=1)
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
+
+        # 2. Single-day history (what the ORIGINAL code did)
+        r1 = fyers.history(data={
+            "symbol": sym, "resolution": "1", "date_format": "1",
+            "range_from": d.strftime("%Y-%m-%d"),
+            "range_to":   d.strftime("%Y-%m-%d"),
+            "cont_flag": "1",
+        })
+        out["history_single_day"] = {
+            "date": str(d), "s": r1.get("s"), "code": r1.get("code"),
+            "message": r1.get("message"),
+            "candle_count": len(r1.get("candles") or []),
+        }
+
+        # 3. Multi-day history (what the NEW code does)
+        start = d - timedelta(days=10)
+        r2 = fyers.history(data={
+            "symbol": sym, "resolution": "1", "date_format": "1",
+            "range_from": start.strftime("%Y-%m-%d"),
+            "range_to":   d.strftime("%Y-%m-%d"),
+            "cont_flag": "1",
+        })
+        candles2 = r2.get("candles") or []
+        out["history_multi_day"] = {
+            "range": f"{start} .. {d}", "s": r2.get("s"), "code": r2.get("code"),
+            "message": r2.get("message"),
+            "candle_count": len(candles2),
+        }
+
+        # 4. Which distinct sessions came back in the multi-day call
+        if candles2:
+            import pandas as pd
+            ts = pd.to_datetime([c[0] for c in candles2], unit="s", utc=True)
+            ts = ts.tz_convert("Asia/Kolkata").tz_localize(None)
+            out["history_multi_day"]["distinct_days"] = sorted(
+                {str(x) for x in pd.Series(ts).dt.date}
+            )
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+
+    return out
+
+
 # ── Live spreads ──────────────────────────────────────────────────────────────
 
 @router.post("/live")
@@ -629,6 +709,17 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
                     ranges_5d[key] = dict(empty)
 
         primary = ranges_5d if body.days >= 5 else ranges_3d
-        return {"ranges": primary, "ranges_3d": ranges_3d, "ranges_5d": ranges_5d, "days": body.days}
+
+        # If nothing resolved, say so explicitly rather than returning silent nulls
+        filled = sum(1 for v in ranges_3d.values() if v.get("high") is not None)
+        warning = None
+        if filled == 0 and ranges_3d:
+            warning = (_last_candle_error[0] or
+                       "History API returned no candles for any strike. "
+                       "Check /api/monitor/diag for the raw Fyers response.")
+            print(f"[Range] no data for any strike — {warning}")
+
+        return {"ranges": primary, "ranges_3d": ranges_3d, "ranges_5d": ranges_5d,
+                "days": body.days, "warning": warning}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
