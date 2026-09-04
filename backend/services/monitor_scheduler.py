@@ -29,6 +29,33 @@ SUPABASE_KEY    = os.environ.get("SUPABASE_KEY", "")
 # Key: f"{index}_{strike}_{opt_type}_{exp1}_{exp2}_{level}"
 _alert_sent: dict[str, bool] = {}
 
+# Auto-range backoff — stops a failing section from re-fetching every 30s
+_autorange_fail_count: dict = {}
+_autorange_next_try:   dict = {}
+
+
+def _should_try_autorange(section_key: str) -> bool:
+    """True if we're allowed to attempt an auto-range fetch for this section."""
+    import time
+    nxt = _autorange_next_try.get(section_key, 0)
+    return time.time() >= nxt
+
+
+def _mark_autorange_ok(section_key: str):
+    _autorange_fail_count.pop(section_key, None)
+    _autorange_next_try.pop(section_key, None)
+
+
+def _mark_autorange_fail(section_key: str):
+    """Exponential backoff: 1min, 2min, 4min ... capped at 30min."""
+    import time
+    n = _autorange_fail_count.get(section_key, 0) + 1
+    _autorange_fail_count[section_key] = n
+    delay = min(60 * (2 ** (n - 1)), 1800)
+    _autorange_next_try[section_key] = time.time() + delay
+    print(f"[Monitor] Auto-range backoff for {section_key}: retry in {delay//60}min")
+
+
 # Today's high/low tracker — resets each trading day
 # Key: f"{index}_{strike}_{opt_type}_{exp1}_{exp2}"
 _today_high: dict[str, float] = {}
@@ -210,32 +237,45 @@ def get_spread_ltp(fyers,
 def get_3d_range(fyers, exchange: str, index: str,
                   exp1: str, exp2: str, strike: int, opt_type: str,
                   days: int = 3) -> tuple[Optional[float], Optional[float]]:
-    """Get high and low across last N completed trading days (never includes today)."""
+    """
+    High/low across the last N completed trading days (never includes today).
+    Uses one ranged history call per symbol instead of one call per day.
+    """
     try:
-        from services.fyers_service import build_symbol, compute_spread_series
+        from routers.monitor import _fetch_candles_range, spread_from_frames
+        from services.fyers_service import build_symbol
+
         sym1 = build_symbol(exchange, index, exp1, strike, opt_type)
         sym2 = build_symbol(exchange, index, exp2, strike, opt_type)
 
-        all_highs, all_lows = [], []
-        # FIX: start from yesterday, never today
-        d = date.today() - timedelta(days=1)
-        # Try up to days*2 calendar days to find enough data
-        max_lookback = days * 2 * 2
-        attempts = 0
-
-        while len(all_highs) < days and attempts < max_lookback:
+        # Collect candidate trading days, newest first
+        tdays, d, tries = [], date.today() - timedelta(days=1), 0
+        while len(tdays) < days + 3 and tries < 20:
             if d.weekday() < 5:
-                df = compute_spread_series(fyers, sym1, sym2, d, 1.0, "1")
-                if not df.empty:
-                    hi = df["spread_high"].dropna()
-                    lo = df["spread_low"].dropna()
-                    if len(hi) and len(lo):
-                        all_highs.append(float(hi.max()))
-                        all_lows.append(float(lo.min()))
+                tdays.append(d)
             d -= timedelta(days=1)
-            attempts += 1
+            tries += 1
+        if not tdays:
+            return None, None
 
-        # Return whatever data we have (fallback gracefully)
+        days1 = _fetch_candles_range(fyers, sym1, min(tdays), max(tdays))
+        days2 = _fetch_candles_range(fyers, sym2, min(tdays), max(tdays))
+
+        all_highs, all_lows = [], []
+        for dd in tdays:
+            if len(all_highs) >= days:
+                break
+            f1, f2 = days1.get(dd), days2.get(dd)
+            if f1 is None or f2 is None:
+                continue
+            df = spread_from_frames(f1, f2, "index_p1", 1.0)
+            if not df.empty:
+                hi = df["spread_high"].dropna()
+                lo = df["spread_low"].dropna()
+                if len(hi) and len(lo):
+                    all_highs.append(float(hi.max()))
+                    all_lows.append(float(lo.min()))
+
         if all_highs and all_lows:
             return max(all_highs), min(all_lows)
     except Exception as e:
@@ -356,6 +396,7 @@ def run_monitor_cycle():
             exp2     = section.get("exp2",     "")
             addon    = int(section.get("addon", 100))
             d3_ranges = section.get("d3_ranges", {})  # pre-computed ranges
+            section_key = f"{index}_{exp1}_{exp2}"
 
             if not exp1 or not exp2:
                 continue
@@ -365,59 +406,84 @@ def run_monitor_cycle():
             if not atm:
                 continue
 
-            # Auto-fetch 3D ranges if not saved yet
-            if not d3_ranges:
+            # Auto-fetch 3D ranges if not saved yet.
+            # Uses ONE ranged history call per symbol (not one per day), and
+            # backs off so a persistent failure can't hammer the API every 30s.
+            if not d3_ranges and _should_try_autorange(section_key):
                 print(f"[Monitor] d3_ranges empty for {index} {exp1}-{exp2}, auto-fetching...")
                 try:
-                    from services.fyers_service import build_symbol, compute_spread_series
+                    from routers.monitor import _fetch_candles_range, spread_from_frames
+                    from services.fyers_service import build_symbol
                     from datetime import date as _date
+
+                    # Most recent completed trading days, newest first
+                    tdays, dd, tries = [], _date.today() - timedelta(days=1), 0
+                    while len(tdays) < 6 and tries < 20:
+                        if dd.weekday() < 5:
+                            tdays.append(dd)
+                        dd -= timedelta(days=1)
+                        tries += 1
+
+                    w_start, w_end = min(tdays), max(tdays)
                     strike_map_tmp = generate_strikes(strategy, atm, addon)
                     auto_ranges = {}
+
                     for ot, strikes_tmp in [("CE", strike_map_tmp["ce"]), ("PE", strike_map_tmp["pe"])]:
-                        for s in strikes_tmp:
+                        for s_strike in strikes_tmp:
+                            sym1 = build_symbol(exchange, index, exp1, s_strike, ot)
+                            sym2 = build_symbol(exchange, index, exp2, s_strike, ot)
+
+                            days1 = _fetch_candles_range(fyers, sym1, w_start, w_end)
+                            days2 = _fetch_candles_range(fyers, sym2, w_start, w_end)
+
                             all_h, all_l = [], []
-                            d = _date.today() - timedelta(days=1)
-                            attempts = 0
-                            while len(all_h) < 3 and attempts < 20:
-                                if d.weekday() < 5:
-                                    sym1 = build_symbol(exchange, index, exp1, s, ot)
-                                    sym2 = build_symbol(exchange, index, exp2, s, ot)
-                                    df = compute_spread_series(fyers, sym1, sym2, d, ratio, "1")
-                                    if not df.empty:
-                                        hi = df["spread_high"].dropna()
-                                        lo = df["spread_low"].dropna()
-                                        if len(hi) and len(lo):
-                                            all_h.append(float(hi.max()))
-                                            all_l.append(float(lo.min()))
-                                d -= timedelta(days=1)
-                                attempts += 1
+                            for d in tdays:
+                                if len(all_h) >= 3:
+                                    break
+                                f1, f2 = days1.get(d), days2.get(d)
+                                if f1 is None or f2 is None:
+                                    continue
+                                df = spread_from_frames(f1, f2, strategy, ratio)
+                                if not df.empty:
+                                    hi = df["spread_high"].dropna()
+                                    lo = df["spread_low"].dropna()
+                                    if len(hi) and len(lo):
+                                        all_h.append(float(hi.max()))
+                                        all_l.append(float(lo.min()))
+
                             if all_h:
-                                auto_ranges[f"{s}_{ot}"] = {
+                                auto_ranges[f"{s_strike}_{ot}"] = {
                                     "high": round(max(all_h), 2),
                                     "low":  round(min(all_l), 2),
                                     "days_used": len(all_h),
                                 }
+
                     d3_ranges = auto_ranges
                     print(f"[Monitor] Auto-fetched 3D ranges for {index}: {len(d3_ranges)} strikes")
-                    # Save back to Supabase so future cycles use cached ranges
-                    try:
-                        from services.supabase_service import get_supabase
-                        sb = get_supabase()
-                        rows = sb.table("monitor_configs").select("id,sections").execute()
-                        for row in (rows.data or []):
-                            updated_sections = []
-                            changed = False
-                            for sec in (row.get("sections") or []):
-                                if sec.get("exp1") == exp1 and sec.get("exp2") == exp2 and sec.get("index") == index:
-                                    sec["d3_ranges"] = auto_ranges
-                                    changed = True
-                                updated_sections.append(sec)
-                            if changed:
-                                sb.table("monitor_configs").update({"sections": updated_sections}).eq("id", row["id"]).execute()
-                                print(f"[Monitor] Saved auto-ranges to Supabase for {index}")
-                    except Exception as se:
-                        print(f"[Monitor] Could not save auto-ranges: {se}")
+
+                    if auto_ranges:
+                        _mark_autorange_ok(section_key)
+                        try:
+                            sb = get_supabase()
+                            rows = sb.table("monitor_configs").select("id,sections").execute()
+                            for row in (rows.data or []):
+                                updated_sections, changed = [], False
+                                for sec in (row.get("sections") or []):
+                                    if (sec.get("exp1") == exp1 and sec.get("exp2") == exp2
+                                            and sec.get("index") == index):
+                                        sec["d3_ranges"] = auto_ranges
+                                        changed = True
+                                    updated_sections.append(sec)
+                                if changed:
+                                    sb.table("monitor_configs").update(
+                                        {"sections": updated_sections}).eq("id", row["id"]).execute()
+                                    print(f"[Monitor] Saved auto-ranges to Supabase for {index}")
+                        except Exception as se:
+                            print(f"[Monitor] Could not save auto-ranges: {se}")
+                    else:
+                        _mark_autorange_fail(section_key)
                 except Exception as re:
+                    _mark_autorange_fail(section_key)
                     print(f"[Monitor] Auto-range fetch failed: {re}")
 
             strategy     = section.get("strategy",     "index_p1")
