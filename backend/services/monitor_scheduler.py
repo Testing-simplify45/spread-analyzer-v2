@@ -134,44 +134,73 @@ def generate_strikes(strategy: str, atm: int, addon: int) -> dict:
     }
 
 
-def compute_spread_value(strategy: str, ltp1, ltp2, ltp3, ratio: float, multiplier: float):
-    """Compute spread based on strategy formula."""
+def round_to_nearest_50(value: float) -> int:
+    return int(round(value / 50) * 50)
+
+
+def derive_l2_strike(l1_strike: int, multiplier: float) -> int:
+    return round_to_nearest_50(l1_strike / multiplier)
+
+
+def compute_spread_value(strategy: str, ltp1, ltp2, ltp3, ratio: float, multiplier: float = 3.3):
+    """
+    Compute spread based on strategy formula.
+    NFO/BFO:       L1 - (L2 * ratio)   — L2 derived from L1/multiplier
+    Butterfly NFO: [L1 - (L2*ratio)] + [L3 - (L2*ratio)]
+    """
     r = ratio or 1.0
-    m = multiplier or 3.3
     if ltp1 is None: return None
     if strategy in ("index_p1", "index_p2"):
         if ltp2 is None: return None
         return round(ltp1 - (ltp2 * r), 2)
     elif strategy == "nfo_bfo":
         if ltp2 is None: return None
-        return round(ltp1 - (ltp2 * m * r), 2)
+        return round(ltp1 - (ltp2 * r), 2)
     elif strategy == "butterfly_index":
         if ltp2 is None or ltp3 is None: return None
         return round(ltp1 - (ltp2 * r) - (ltp2 * r) + ltp3, 2)
     elif strategy == "butterfly_nfo":
         if ltp2 is None or ltp3 is None: return None
-        return round(ltp1 - (ltp2 * m * r) - (ltp2 * m * r) + ltp3, 2)
+        return round((ltp1 - (ltp2 * r)) + (ltp3 - (ltp2 * r)), 2)
     return None
 
 
-def get_spread_ltp(fyers, exchange: str, index: str,
-                    exp1: str, exp2: str, strike: int, opt_type: str,
+def get_spread_ltp(fyers,
+                    exchange1: str, index1: str, exp1: str,
+                    exchange2: str, index2: str, exp_l2: str,
+                    l1_strike: int, opt_type: str,
                     strategy: str = "index_p1", ratio: float = 1.0,
-                    multiplier: float = 3.3, exp3: str = "") -> Optional[float]:
-    """Get live spread LTP using strategy formula."""
+                    multiplier: float = 3.3,
+                    exp3: str = "", exp_l2b: str = "") -> Optional[float]:
+    """Get live spread LTP using strategy formula, supporting multi-index."""
     try:
         from services.fyers_service import build_symbol, get_batch_ltp
-        sym1 = build_symbol(exchange, index, exp1, strike, opt_type)
-        sym2 = build_symbol(exchange, index, exp2, strike, opt_type)
+        is_multi_idx  = strategy in ("nfo_bfo", "butterfly_nfo")
+        is_butterfly  = strategy in ("butterfly_index", "butterfly_nfo")
+
+        l2_strike = derive_l2_strike(l1_strike, multiplier) if is_multi_idx else l1_strike
+        sym1 = build_symbol(exchange1, index1, exp1, l1_strike, opt_type)
+        sym2 = build_symbol(exchange2, index2, exp_l2, l2_strike, opt_type)
         syms = [sym1, sym2]
-        sym3 = None
-        if strategy in ("butterfly_index", "butterfly_nfo") and exp3:
-            sym3 = build_symbol(exchange, index, exp3, strike, opt_type)
+        sym3 = sym2b = None
+
+        if is_butterfly:
+            sym3 = build_symbol(exchange1, index1, exp3, l1_strike, opt_type)
             syms.append(sym3)
+            if is_multi_idx and exp_l2b:
+                sym2b = build_symbol(exchange2, index2, exp_l2b, l2_strike, opt_type)
+                syms.append(sym2b)
+
         ltp_map = get_batch_ltp(fyers, syms)
         ltp1 = ltp_map.get(sym1)
         ltp2 = ltp_map.get(sym2)
         ltp3 = ltp_map.get(sym3) if sym3 else None
+
+        if sym2b:
+            ltp2b = ltp_map.get(sym2b)
+            if ltp2 is not None and ltp2b is not None:
+                ltp2 = (ltp2 + ltp2b) / 2
+
         return compute_spread_value(strategy, ltp1, ltp2, ltp3, ratio, multiplier)
     except Exception as e:
         print(f"[Monitor] LTP error: {e}")
@@ -218,7 +247,8 @@ def check_alerts(index: str, strike: int, opt_type: str,
                   current: float, d3_high: float, d3_low: float,
                   prev_close: Optional[float] = None,
                   today_high: Optional[float] = None,
-                  today_low:  Optional[float] = None):
+                  today_low:  Optional[float] = None,
+                  pc_threshold: float = 10.0):
     """Check if any alert conditions are met and send Telegram."""
     prefix = f"{index}_{strike}_{opt_type}_{exp1}_{exp2}"
 
@@ -264,28 +294,30 @@ def check_alerts(index: str, strike: int, opt_type: str,
                 _alert_sent[key] = True
                 print(f"[Monitor] Alert sent: above 3D high by 5pts for {index} {strike} {opt_type}")
 
-    # Prev close +10 alert (once only)
+    # Prev close ± threshold alert (once only)
     today_line = f"📊 Today's Range: {today_low:.0f} — {today_high:.0f}\n" if today_high is not None and today_low is not None else ""
     if prev_close is not None:
-        if current >= prev_close + 10:
+        if current >= prev_close + pc_threshold:
             key = f"{prefix}_pc_high"
             if not _alert_sent.get(key):
                 pts = round(current - prev_close, 2)
                 msg = (
                     f"📈 <b>{index} {strike} {opt_type}</b> Prev Close +{pts:.0f} Alert\n"
                     f"Prev Close: <b>{prev_close:.0f}</b> | Current: <b>{current:.0f}</b>\n"
+                    f"Threshold: ±{pc_threshold:.0f}\n"
                     f"{today_line}"
                     f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
                 )
                 if send_telegram(msg):
                     _alert_sent[key] = True
-        if current <= prev_close - 10:
+        if current <= prev_close - pc_threshold:
             key = f"{prefix}_pc_low"
             if not _alert_sent.get(key):
                 pts = round(prev_close - current, 2)
                 msg = (
                     f"📉 <b>{index} {strike} {opt_type}</b> Prev Close -{pts:.0f} Alert\n"
                     f"Prev Close: <b>{prev_close:.0f}</b> | Current: <b>{current:.0f}</b>\n"
+                    f"Threshold: ±{pc_threshold:.0f}\n"
                     f"{today_line}"
                     f"⏰ {datetime.now(IST).strftime('%H:%M:%S')}"
                 )
@@ -332,28 +364,39 @@ def run_monitor_cycle():
             if not atm:
                 continue
 
-            strategy   = section.get("strategy",   "index_p1")
-            ratio      = float(section.get("ratio",      1.0))
-            multiplier = float(section.get("multiplier", 3.3))
-            exp3       = section.get("exp3", "")
+            strategy     = section.get("strategy",     "index_p1")
+            ratio        = float(section.get("ratio",        1.0))
+            multiplier   = float(section.get("multiplier",   3.3))
+            exp3         = section.get("exp3",    "")
+            index2       = section.get("index2",  index)
+            exchange2    = {"NIFTY":"NSE","BANKNIFTY":"NSE","FINNIFTY":"NSE","MIDCPNIFTY":"NSE","SENSEX":"BSE","BANKEX":"BSE"}.get(index2, "NSE")
+            exp_l2a      = section.get("exp_l2a", exp2)
+            exp_l2b      = section.get("exp_l2b", "")
+            pc_mode      = section.get("pc_mode",      "default")
+            pc_threshold = float(section.get("pc_threshold", 10.0))
+            effective_pc = pc_threshold if pc_mode == "custom" else 10.0
 
             strike_map = generate_strikes(strategy, atm, addon)
 
             for opt_type, strikes in [("CE", strike_map["ce"]), ("PE", strike_map["pe"])]:
-                for strike in strikes:
-                    current = get_spread_ltp(fyers, exchange, index, exp1, exp2, strike, opt_type,
-                                             strategy=strategy, ratio=ratio,
-                                             multiplier=multiplier, exp3=exp3)
+                for l1_strike in strikes:
+                    current = get_spread_ltp(
+                        fyers,
+                        exchange, index, exp1,
+                        exchange2, index2, exp_l2a,
+                        l1_strike, opt_type,
+                        strategy=strategy, ratio=ratio,
+                        multiplier=multiplier, exp3=exp3, exp_l2b=exp_l2b
+                    )
                     if current is None:
                         continue
 
-                    range_key    = f"{strike}_{opt_type}"
-                    tracker_key  = f"{index}_{strike}_{opt_type}_{exp1}_{exp2}"
-                    d3_high      = d3_ranges.get(range_key, {}).get("high")
-                    d3_low       = d3_ranges.get(range_key, {}).get("low")
-                    prev_close   = section.get("prev_closes", {}).get(range_key)
+                    range_key   = f"{l1_strike}_{opt_type}"
+                    tracker_key = f"{index}_{l1_strike}_{opt_type}_{exp1}_{exp2}"
+                    d3_high     = d3_ranges.get(range_key, {}).get("high")
+                    d3_low      = d3_ranges.get(range_key, {}).get("low")
+                    prev_close  = section.get("prev_closes", {}).get(range_key)
 
-                    # Track today's intraday high/low
                     update_today_range(tracker_key, current)
                     t_high = _today_high.get(tracker_key)
                     t_low  = _today_low.get(tracker_key)
@@ -361,10 +404,11 @@ def run_monitor_cycle():
                     if d3_high is None or d3_low is None:
                         continue
 
-                    check_alerts(index, strike, opt_type, exp1, exp2,
+                    check_alerts(index, l1_strike, opt_type, exp1, exp2,
                                   current, d3_high, d3_low,
                                   prev_close=prev_close,
-                                  today_high=t_high, today_low=t_low)
+                                  today_high=t_high, today_low=t_low,
+                                  pc_threshold=effective_pc)
 
         except Exception as e:
             print(f"[Monitor] Section error: {e}")
