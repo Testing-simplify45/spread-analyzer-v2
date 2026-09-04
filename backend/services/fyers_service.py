@@ -93,21 +93,30 @@ def exchange_code_for_token(
     client_id: str, secret_key: str,
     redirect_uri: str, auth_code: str
 ) -> Optional[str]:
-    try:
-        session = fyersModel.SessionModel(
-            client_id=client_id,
-            secret_key=secret_key,
-            redirect_uri=redirect_uri,
-            response_type="code",
-            grant_type="authorization_code",
-        )
-        session.set_token(auth_code)
-        resp = session.generate_token()
-        if resp.get("s") == "ok":
-            return resp["access_token"]
-        return None
-    except Exception:
-        return None
+    import time
+    last_error = None
+    for attempt in range(3):
+        try:
+            session = fyersModel.SessionModel(
+                client_id=client_id,
+                secret_key=secret_key,
+                redirect_uri=redirect_uri,
+                response_type="code",
+                grant_type="authorization_code",
+            )
+            session.set_token(auth_code)
+            resp = session.generate_token()
+            if resp.get("s") == "ok":
+                return resp["access_token"]
+            last_error = resp.get("message", "Unknown error")
+            print(f"[Auth] Token exchange attempt {attempt+1} failed: {last_error}")
+        except Exception as e:
+            last_error = str(e)
+            print(f"[Auth] Token exchange attempt {attempt+1} exception: {e}")
+        if attempt < 2:
+            time.sleep(2 * (attempt + 1))  # 2s, 4s backoff
+    print(f"[Auth] All token exchange attempts failed. Last error: {last_error}")
+    return None
 
 
 # ── Expiries ──────────────────────────────────────────────────────────────────
