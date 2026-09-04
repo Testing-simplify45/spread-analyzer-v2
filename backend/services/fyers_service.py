@@ -241,12 +241,27 @@ def compute_spread_series(
     trade_date: date,
     ratio: float = 1.0,
     resolution: str = "1",
+    sym3: Optional[str] = None,
+    strategy: str = "index_p1",
+    multiplier: float = 3.3,
 ) -> pd.DataFrame:
     """
-    Fetch candles for two symbols and compute spread series.
-    spread      = leg1_close - leg2_close * ratio
-    spread_high = leg1_high  - leg2_low   * ratio
-    spread_low  = leg1_low   - leg2_high  * ratio
+    Fetch candles for two (or three, for butterfly strategies) symbols and
+    compute the spread series.
+
+    Two-leg (index_p1/index_p2/nfo_bfo):
+      spread      = leg1_close - leg2_close * ratio
+      spread_high = leg1_high  - leg2_low   * ratio
+      spread_low  = leg1_low   - leg2_high  * ratio
+
+    Three-leg butterfly (butterfly_index/butterfly_nfo), sym3 given:
+      spread      = leg1_close - 2*(leg2_close*ratio) + leg3_close
+      spread_high = leg1_high  - 2*(leg2_low*ratio)    + leg3_high
+      spread_low  = leg1_low   - 2*(leg2_high*ratio)   + leg3_low
+
+    `multiplier` is accepted for signature compatibility with callers that
+    derive the L2 strike from it before building sym2 — it does not affect
+    this calculation, since sym2 already reflects the derived strike.
     """
     df1 = get_candles(fyers, sym1, trade_date, resolution)
     df2 = get_candles(fyers, sym2, trade_date, resolution)
@@ -256,6 +271,28 @@ def compute_spread_series(
 
     df1 = df1[~df1.index.duplicated(keep="last")]
     df2 = df2[~df2.index.duplicated(keep="last")]
+
+    is_butterfly = strategy in ("butterfly_index", "butterfly_nfo")
+
+    if is_butterfly and sym3:
+        df3 = get_candles(fyers, sym3, trade_date, resolution)
+        if df3.empty:
+            return pd.DataFrame()
+        df3 = df3[~df3.index.duplicated(keep="last")]
+
+        common = df1.index.intersection(df2.index).intersection(df3.index)
+        if common.empty:
+            return pd.DataFrame()
+
+        return pd.DataFrame({
+            "timestamp":   common,
+            "leg1_price":  df1.loc[common, "close"].values,
+            "leg2_price":  df2.loc[common, "close"].values,
+            "leg3_price":  df3.loc[common, "close"].values,
+            "spread":      (df1.loc[common, "close"] - 2 * df2.loc[common, "close"] * ratio + df3.loc[common, "close"]).values,
+            "spread_high": (df1.loc[common, "high"]  - 2 * df2.loc[common, "low"]   * ratio + df3.loc[common, "high"]).values,
+            "spread_low":  (df1.loc[common, "low"]   - 2 * df2.loc[common, "high"]  * ratio + df3.loc[common, "low"]).values,
+        })
 
     common = df1.index.intersection(df2.index)
     if common.empty:
