@@ -123,6 +123,7 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
   const [loadingLive,  setLoadingLive]  = useState(false)
   const [loadingRange, setLoadingRange] = useState(false)
   const [errMsg,       setErrMsg]       = useState('')
+  const [liveAtm,      setLiveAtm]      = useState(null)
   const [d3Ranges,     setD3Ranges]     = useState(section.d3_ranges || {})
   const [d5Ranges,     setD5Ranges]     = useState({})
   const [prevClose,    setPrevClose]    = useState({})
@@ -134,6 +135,8 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
   const interval    = section.interval    ?? 100
   const pcMode      = section.pc_mode     || 'default'   // 'default' | 'custom'
   const pcThreshold = section.pc_threshold ?? 10
+  const flMode      = section.fl_mode    || 'atm'       // 'atm' | 'custom'
+  const flStrike    = section.fl_strike  ?? ''          // custom first-leg strike
 
   const isButterfly    = strategy === 'butterfly_index' || strategy === 'butterfly_nfo'
   const isIndexP2      = strategy === 'index_p2'
@@ -162,12 +165,36 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
     setLoadingAtm(true)
     setErrMsg('')
     try {
+      // Custom first leg: build the ladder from the user's strike and skip the
+      // spot lookup entirely. Still show the live ATM alongside for reference.
+      if (flMode === 'custom') {
+        const base = Number(flStrike)
+        if (!base || base <= 0) {
+          setErrMsg('Enter a valid First Leg strike, or switch back to ATM.')
+          return null
+        }
+        const { ce, pe } = generateStrikes(strategy, base, section.addon)
+        setCeStrikes(ce)
+        setPeStrikes(pe)
+        setAtm(base)
+        // Best-effort: fetch the real ATM just to display it, ignore failures
+        try {
+          const r = await axios.get(`${BASE_URL}/monitor/atm/${index1}`, {
+            params: { addon: section.addon },
+            headers: { Authorization: authHeader }
+          })
+          setLiveAtm(r.data.atm)
+        } catch { setLiveAtm(null) }
+        return { atm: base, ce, pe }
+      }
+
       const res = await axios.get(`${BASE_URL}/monitor/atm/${index1}`, {
         params: { addon: section.addon },
         headers: { Authorization: authHeader }
       })
       const atmVal = res.data.atm
       setAtm(atmVal)
+      setLiveAtm(atmVal)
       const { ce, pe } = generateStrikes(strategy, atmVal, section.addon)
       setCeStrikes(ce)
       setPeStrikes(pe)
@@ -183,7 +210,7 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
       return null
     }
     finally { setLoadingAtm(false) }
-  }, [index1, section.addon, strategy, authHeader])
+  }, [index1, section.addon, strategy, authHeader, flMode, flStrike])
 
   // Build the payload for live/prevclose/range requests
   const buildPayload = (ceS, peS, extra = {}) => ({
@@ -336,7 +363,11 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
                 <tr key={i} className={`border-b border-edge/30 hover:bg-panelLight/30 transition-colors ${isAtmRow ? 'bg-cyan/5' : ''}`}>
                   <td className="py-2 px-3 font-mono font-bold text-bright">
                     {row.strike}
-                    {isAtmRow && <span className="ml-1 text-[9px] text-cyan font-normal">ATM</span>}
+                    {isAtmRow && (
+                      <span className={`ml-1 text-[9px] font-normal ${flMode === 'custom' ? 'text-amber-400' : 'text-cyan'}`}>
+                        {flMode === 'custom' ? 'L1' : 'ATM'}
+                      </span>
+                    )}
                   </td>
                   {isMultiIndex && (
                     <td className="py-2 px-3 font-mono text-ink/70">{l2Strike}</td>
@@ -389,7 +420,15 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
             {STRATEGIES.find(s => s.value === strategy)?.label} · {index1}
             {isMultiIndex && ` / ${index2}`}
           </span>
-          {atm && <span className="text-[10px] font-mono text-cyan bg-cyan/10 px-2 py-0.5 rounded-full">ATM: {atm}</span>}
+          {atm && (
+            flMode === 'custom' ? (
+              <span className="text-[10px] font-mono text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full">
+                First Leg: {atm}{liveAtm && liveAtm !== atm ? ` · ATM ${liveAtm}` : ''}
+              </span>
+            ) : (
+              <span className="text-[10px] font-mono text-cyan bg-cyan/10 px-2 py-0.5 rounded-full">ATM: {atm}</span>
+            )
+          )}
         </div>
         <button onClick={() => onRemove(section.id)}
           className="text-crimson/60 hover:text-crimson transition-colors text-xs font-mono">
@@ -494,7 +533,29 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
       )}
 
       {/* Row 3: Addon + Ratio + Multiplier + PC Threshold + Interval + Actions */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-3 mb-4">
+        {/* First Leg — ATM by default, or a strike the user types in */}
+        <div>
+          <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">First Leg</label>
+          <div className="flex gap-1">
+            <select value={flMode}
+              onChange={e => onUpdate({
+                ...section,
+                fl_mode: e.target.value,
+                fl_strike: e.target.value === 'atm' ? '' : (section.fl_strike ?? ''),
+              })}
+              className="bg-panelLight border border-edge rounded-lg px-2 py-2 text-sm text-bright font-mono outline-none focus:border-cyan">
+              <option value="atm">ATM</option>
+              <option value="custom">Custom</option>
+            </select>
+            {flMode === 'custom' && (
+              <input type="number" value={section.fl_strike ?? ''}
+                onChange={e => onUpdate({ ...section, fl_strike: e.target.value })}
+                step={section.addon || 50} min={0} placeholder="Strike"
+                className="w-24 bg-panelLight border border-cyan/50 rounded-lg px-2 py-2 text-sm text-bright font-mono outline-none focus:border-cyan" />
+            )}
+          </div>
+        </div>
         <div>
           <label className="text-[10px] font-mono text-ink uppercase tracking-wider mb-1 block">Add-on</label>
           <input type="number" value={section.addon}
@@ -623,6 +684,7 @@ export default function LiveMonitorPage() {
       exp3: '', exp3_label: '', exp_l2a: '', exp_l2b: '',
       addon: 100, ratio: 1, multiplier: 3.3, interval: 100,
       pc_mode: 'default', pc_threshold: 10,
+      fl_mode: 'atm', fl_strike: '',
       d3_ranges: {},
     }
     setSections(prev => [newSection, ...prev])
