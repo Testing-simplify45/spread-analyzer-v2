@@ -34,6 +34,63 @@ _autorange_fail_count: dict = {}
 _autorange_next_try:   dict = {}
 
 
+_prev_close_cache: dict = {}
+_prev_close_day:   list = [None]
+
+
+def get_prev_close(fyers, exchange: str, index: str, exp1: str, exp2: str,
+                   strike: int, opt_type: str, strategy: str, ratio: float,
+                   exp3: str = "", exchange2: str = None, index2: str = None,
+                   exp_l2: str = "", multiplier: float = 3.3):
+    """
+    Last completed session's closing spread. Cached per day.
+    The scheduler must derive this itself — the UI never persists it.
+    """
+    from datetime import date as _date
+    today = str(_date.today())
+    if _prev_close_day[0] != today:
+        _prev_close_cache.clear()
+        _prev_close_day[0] = today
+
+    ck = f"{index}_{exp1}_{exp2}_{strike}_{opt_type}"
+    if ck in _prev_close_cache:
+        return _prev_close_cache[ck]
+
+    value = None
+    try:
+        from routers.monitor import _fetch_candles_range, spread_from_frames, derive_l2_strike
+        from services.fyers_service import build_symbol
+
+        d = _date.today() - timedelta(days=1)
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
+
+        is_multi = strategy in ("nfo_bfo", "butterfly_nfo")
+        is_bfly  = strategy in ("butterfly_index", "butterfly_nfo")
+
+        ex2  = exchange2 or exchange
+        ix2  = index2 or index
+        l2s  = derive_l2_strike(strike, multiplier) if is_multi else strike
+        e_l2 = exp_l2 if (is_multi and exp_l2) else exp2
+
+        sym1 = build_symbol(exchange, index, exp1, strike, opt_type)
+        sym2 = build_symbol(ex2, ix2, e_l2, l2s, opt_type)
+        sym3 = build_symbol(exchange, index, exp3, strike, opt_type) if (is_bfly and exp3) else None
+
+        f1 = _fetch_candles_range(fyers, sym1, d, d).get(d)
+        f2 = _fetch_candles_range(fyers, sym2, d, d).get(d)
+        f3 = _fetch_candles_range(fyers, sym3, d, d).get(d) if sym3 else None
+
+        df = spread_from_frames(f1, f2, strategy, ratio, df3=f3)
+        if not df.empty:
+            value = round(float(df["spread"].iloc[-1]), 2)
+    except Exception as e:
+        print(f"[Monitor] prev_close {ck} failed: {e}")
+
+    _prev_close_cache[ck] = value
+    return value
+
+
 def _should_try_autorange(section_key: str) -> bool:
     """True if we're allowed to attempt an auto-range fetch for this section."""
     import time
@@ -290,11 +347,16 @@ def check_alerts(index: str, strike: int, opt_type: str,
                   today_high: Optional[float] = None,
                   today_low:  Optional[float] = None,
                   pc_threshold: float = 10.0):
-    """Check if any alert conditions are met and send Telegram."""
+    """
+    Evaluate alert conditions and send Telegram messages.
+    d3_high/d3_low may be None (ranges not fetched yet) — in that case the
+    3D checks are skipped but prev-close alerts still run.
+    """
     prefix = f"{index}_{strike}_{opt_type}_{exp1}_{exp2}"
+    has_range = d3_high is not None and d3_low is not None
 
     # Near 3D LOW (current <= d3_low + 1)
-    if current <= d3_low + 1:
+    if has_range and current <= d3_low + 1:
         key = f"{prefix}_near_low"
         if not _alert_sent.get(key):
             msg = alert_near_3d_low(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current,
@@ -304,7 +366,7 @@ def check_alerts(index: str, strike: int, opt_type: str,
                 print(f"[Monitor] Alert sent: near 3D low for {index} {strike} {opt_type}")
 
     # 5pts BELOW 3D LOW
-    if current <= d3_low - 5:
+    if has_range and current <= d3_low - 5:
         key = f"{prefix}_below_low_5"
         if not _alert_sent.get(key):
             pts = d3_low - current
@@ -315,7 +377,7 @@ def check_alerts(index: str, strike: int, opt_type: str,
                 print(f"[Monitor] Alert sent: below 3D low by 5pts for {index} {strike} {opt_type}")
 
     # Near 3D HIGH (current >= d3_high - 1)
-    if current >= d3_high - 1:
+    if has_range and current >= d3_high - 1:
         key = f"{prefix}_near_high"
         if not _alert_sent.get(key):
             msg = alert_near_3d_high(index, strike, opt_type, exp1, exp2, d3_low, d3_high, current,
@@ -325,7 +387,7 @@ def check_alerts(index: str, strike: int, opt_type: str,
                 print(f"[Monitor] Alert sent: near 3D high for {index} {strike} {opt_type}")
 
     # 5pts ABOVE 3D HIGH
-    if current >= d3_high + 5:
+    if has_range and current >= d3_high + 5:
         key = f"{prefix}_above_high_5"
         if not _alert_sent.get(key):
             pts = current - d3_high
@@ -366,10 +428,10 @@ def check_alerts(index: str, strike: int, opt_type: str,
                     _alert_sent[key] = True
 
     # Reset alerts if price moves away from boundaries
-    if current > d3_low + 5:
+    if has_range and current > d3_low + 5:
         _alert_sent.pop(f"{prefix}_near_low", None)
         _alert_sent.pop(f"{prefix}_below_low_5", None)
-    if current < d3_high - 5:
+    if has_range and current < d3_high - 5:
         _alert_sent.pop(f"{prefix}_near_high", None)
         _alert_sent.pop(f"{prefix}_above_high_5", None)
 
@@ -517,15 +579,20 @@ def run_monitor_cycle():
                     tracker_key = f"{index}_{l1_strike}_{opt_type}_{exp1}_{exp2}"
                     d3_high     = d3_ranges.get(range_key, {}).get("high")
                     d3_low      = d3_ranges.get(range_key, {}).get("low")
-                    prev_close  = section.get("prev_closes", {}).get(range_key)
+                    # Derive prev close here — the UI never persists it
+                    prev_close = get_prev_close(
+                        fyers, exchange, index, exp1, exp2,
+                        l1_strike, opt_type, strategy, ratio,
+                        exp3=exp3, exchange2=exchange2, index2=index2,
+                        exp_l2=exp_l2a, multiplier=multiplier,
+                    )
 
                     update_today_range(tracker_key, current)
                     t_high = _today_high.get(tracker_key)
                     t_low  = _today_low.get(tracker_key)
 
-                    if d3_high is None or d3_low is None:
-                        continue
-
+                    # Prev-close alerts must not depend on the 3D range being
+                    # available — they are an independent trigger.
                     check_alerts(index, l1_strike, opt_type, exp1, exp2,
                                   current, d3_high, d3_low,
                                   prev_close=prev_close,
