@@ -327,11 +327,11 @@ def get_3d_range(fyers, exchange: str, index: str,
                 continue
             df = spread_from_frames(f1, f2, "index_p1", 1.0)
             if not df.empty:
-                hi = df["spread_high"].dropna()
-                lo = df["spread_low"].dropna()
-                if len(hi) and len(lo):
-                    all_highs.append(float(hi.max()))
-                    all_lows.append(float(lo.min()))
+                # Close-based, matching the strategy-page charts
+                s = df["spread"].dropna()
+                if len(s):
+                    all_highs.append(float(s.max()))
+                    all_lows.append(float(s.min()))
 
         if all_highs and all_lows:
             return max(all_highs), min(all_lows)
@@ -468,6 +468,21 @@ def run_monitor_cycle():
             if not atm:
                 continue
 
+            # Honour a custom first-leg strike so the scheduler watches the same
+            # ladder the UI displays; fall back to ATM if missing or invalid.
+            # Must be resolved here — the auto-range block below also needs it.
+            fl_mode = section.get("fl_mode", "atm")
+            base_strike = atm
+            if fl_mode == "custom":
+                try:
+                    cand = int(float(section.get("fl_strike") or 0))
+                    if cand > 0:
+                        base_strike = cand
+                    else:
+                        print(f"[Monitor] {section_key}: invalid fl_strike, using ATM {atm}")
+                except (TypeError, ValueError):
+                    print(f"[Monitor] {section_key}: unparseable fl_strike, using ATM {atm}")
+
             # Auto-fetch 3D ranges if not saved yet.
             # Uses ONE ranged history call per symbol (not one per day), and
             # backs off so a persistent failure can't hammer the API every 30s.
@@ -487,7 +502,7 @@ def run_monitor_cycle():
                         tries += 1
 
                     w_start, w_end = min(tdays), max(tdays)
-                    strike_map_tmp = generate_strikes(strategy, atm, addon)
+                    strike_map_tmp = generate_strikes(strategy, base_strike, addon)
                     auto_ranges = {}
 
                     for ot, strikes_tmp in [("CE", strike_map_tmp["ce"]), ("PE", strike_map_tmp["pe"])]:
@@ -507,11 +522,11 @@ def run_monitor_cycle():
                                     continue
                                 df = spread_from_frames(f1, f2, strategy, ratio)
                                 if not df.empty:
-                                    hi = df["spread_high"].dropna()
-                                    lo = df["spread_low"].dropna()
-                                    if len(hi) and len(lo):
-                                        all_h.append(float(hi.max()))
-                                        all_l.append(float(lo.min()))
+                                    # Close-based, matching the strategy-page charts
+                                    s = df["spread"].dropna()
+                                    if len(s):
+                                        all_h.append(float(s.max()))
+                                        all_l.append(float(s.min()))
 
                             if all_h:
                                 auto_ranges[f"{s_strike}_{ot}"] = {
@@ -560,7 +575,7 @@ def run_monitor_cycle():
             pc_threshold = float(section.get("pc_threshold", 10.0))
             effective_pc = pc_threshold if pc_mode == "custom" else 10.0
 
-            strike_map = generate_strikes(strategy, atm, addon)
+            strike_map = generate_strikes(strategy, base_strike, addon)
 
             for opt_type, strikes in [("CE", strike_map["ce"]), ("PE", strike_map["pe"])]:
                 for l1_strike in strikes:
