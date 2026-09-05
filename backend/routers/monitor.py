@@ -158,8 +158,15 @@ def _fetch_candles_range(fyers, symbol: str, start_date, end_date, resolution: s
 def spread_from_frames(df1, df2, strategy, ratio, df3=None, df2b=None):
     """
     Compute a spread series from already-fetched candle frames for ONE day.
-    Returns a DataFrame with spread / spread_high / spread_low.
-    Uses opposing legs for high/low so the range reflects true intraday extremes.
+
+    Returns 'spread' (close-based) plus 'spread_high'/'spread_low'.
+
+    IMPORTANT: use 'spread' for 3D/5D ranges. The _high/_low columns pair each
+    leg at its most favourable extreme within the same minute (leg1 high vs
+    leg2 low). Those extremes occur at different seconds, so that combination
+    never traded — it is a theoretical envelope, not an observed price, and it
+    overstates the range badly on multi-leg spreads. The strategy-page charts
+    aggregate 'spread', so ranges must use it too or the two pages disagree.
     """
     import pandas as pd
 
@@ -240,6 +247,8 @@ class MonitorSection(BaseModel):
     interval:     int   = 100
     pc_mode:      str   = "default"     # 'default' | 'custom'
     pc_threshold: float = 10.0
+    fl_mode:      str   = "atm"         # 'atm' | 'custom' — first-leg base strike
+    fl_strike:    Optional[str] = ""    # custom base strike when fl_mode='custom'
     d3_ranges:    dict  = {}
 
 
@@ -686,11 +695,11 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
 
                         df = spread_from_frames(f1, f2, body.strategy, body.ratio, df3=f3, df2b=f2b)
                         if not df.empty:
-                            hi = df["spread_high"].dropna()
-                            lo = df["spread_low"].dropna()
-                            if len(hi) and len(lo):
-                                day_hi.append(float(hi.max()))
-                                day_lo.append(float(lo.min()))
+                            # Close-based: the spread values that actually printed
+                            s = df["spread"].dropna()
+                            if len(s):
+                                day_hi.append(float(s.max()))
+                                day_lo.append(float(s.min()))
 
                     def summarise(n):
                         h, l = day_hi[:n], day_lo[:n]
