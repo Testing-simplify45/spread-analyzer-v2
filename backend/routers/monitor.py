@@ -75,6 +75,28 @@ def derive_l2_strike(l1_strike: int, multiplier: float) -> int:
     return round_to_nearest_50(l1_strike / multiplier)
 
 
+def resolve_l2_strike(strategy: str, l1_strike: int, opt_type: str,
+                      multiplier: float = 3.3, interval: int = 0) -> int:
+    """
+    Leg 2's strike for a given leg 1 strike.
+
+      nfo_bfo / butterfly_nfo : L1 / multiplier, rounded to nearest 50
+      index_p2                : CE -> L1 - interval,  PE -> L1 + interval
+                                (leg 2 steps toward the money on both sides)
+      everything else         : same strike as leg 1 (pure calendar)
+    """
+    if strategy in ("nfo_bfo", "butterfly_nfo"):
+        return derive_l2_strike(l1_strike, multiplier)
+
+    if strategy == "index_p2":
+        step = int(interval or 0)
+        if step <= 0:
+            return l1_strike
+        return l1_strike - step if opt_type.upper() == "CE" else l1_strike + step
+
+    return l1_strike
+
+
 # ── Candle fetching: one ranged call per symbol ───────────────────────────────
 # Fyers allows up to 100 days per request at 1-min resolution. The old code
 # requested a single day per call, so a 5-day window across 8 strikes fired
@@ -291,6 +313,7 @@ class FetchRangeRequest(BaseModel):
     strategy:   str   = "index_p1"
     ratio:      float = 1.0
     multiplier: float = 3.3
+    interval:   int   = 100      # index_p2: leg-2 strike offset
     days:       int   = 3
 
 
@@ -517,7 +540,8 @@ def fetch_live_spreads(body: FetchLiveRequest, authorization: str = Header(None)
             OT = opt_type.upper()
             for l1_strike in l1_strikes:
                 # L2 strike derived from L1 for multi-index strategies
-                l2_strike = derive_l2_strike(l1_strike, multiplier) if is_multi_idx else l1_strike
+                l2_strike = resolve_l2_strike(strategy, l1_strike, OT,
+                                              multiplier=multiplier, interval=body.interval)
 
                 # L1 symbol
                 s1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, OT)
@@ -597,7 +621,9 @@ def fetch_prev_close(body: FetchLiveRequest, authorization: str = Header(None)):
             for l1_strike in l1_strikes:
                 key = f"{l1_strike}_{opt_type}"
                 try:
-                    l2_strike = derive_l2_strike(l1_strike, body.multiplier) if is_multi_idx else l1_strike
+                    l2_strike = resolve_l2_strike(body.strategy, l1_strike, opt_type,
+                                                  multiplier=body.multiplier,
+                                                  interval=getattr(body, "interval", 0))
                     exp_l2    = body.exp_l2a if is_multi_idx and body.exp_l2a else body.exp2
 
                     sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
@@ -661,7 +687,9 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
             for l1_strike in l1_strikes:
                 key = f"{l1_strike}_{opt_type}"
                 try:
-                    l2_strike = derive_l2_strike(l1_strike, body.multiplier) if is_multi_idx else l1_strike
+                    l2_strike = resolve_l2_strike(body.strategy, l1_strike, opt_type,
+                                                  multiplier=body.multiplier,
+                                                  interval=getattr(body, "interval", 0))
                     exp_l2    = body.exp_l2a if is_multi_idx and body.exp_l2a else body.exp2
 
                     sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
