@@ -41,7 +41,7 @@ _prev_close_day:   list = [None]
 def get_prev_close(fyers, exchange: str, index: str, exp1: str, exp2: str,
                    strike: int, opt_type: str, strategy: str, ratio: float,
                    exp3: str = "", exchange2: str = None, index2: str = None,
-                   exp_l2: str = "", multiplier: float = 3.3):
+                   exp_l2: str = "", multiplier: float = 3.3, interval: int = 0):
     """
     Last completed session's closing spread. Cached per day.
     The scheduler must derive this itself — the UI never persists it.
@@ -58,7 +58,8 @@ def get_prev_close(fyers, exchange: str, index: str, exp1: str, exp2: str,
 
     value = None
     try:
-        from routers.monitor import _fetch_candles_range, spread_from_frames, derive_l2_strike
+        from routers.monitor import (_fetch_candles_range, spread_from_frames,
+                                     derive_l2_strike, resolve_l2_strike)
         from services.fyers_service import build_symbol
 
         d = _date.today() - timedelta(days=1)
@@ -70,7 +71,8 @@ def get_prev_close(fyers, exchange: str, index: str, exp1: str, exp2: str,
 
         ex2  = exchange2 or exchange
         ix2  = index2 or index
-        l2s  = derive_l2_strike(strike, multiplier) if is_multi else strike
+        l2s  = resolve_l2_strike(strategy, strike, opt_type,
+                                 multiplier=multiplier, interval=interval)
         e_l2 = exp_l2 if (is_multi and exp_l2) else exp2
 
         sym1 = build_symbol(exchange, index, exp1, strike, opt_type)
@@ -254,15 +256,17 @@ def get_spread_ltp(fyers,
                     exchange2: str, index2: str, exp_l2: str,
                     l1_strike: int, opt_type: str,
                     strategy: str = "index_p1", ratio: float = 1.0,
-                    multiplier: float = 3.3,
+                    multiplier: float = 3.3, interval: int = 0,
                     exp3: str = "", exp_l2b: str = "") -> Optional[float]:
     """Get live spread LTP using strategy formula, supporting multi-index."""
     try:
         from services.fyers_service import build_symbol, get_batch_ltp
+        from routers.monitor import resolve_l2_strike
         is_multi_idx  = strategy in ("nfo_bfo", "butterfly_nfo")
         is_butterfly  = strategy in ("butterfly_index", "butterfly_nfo")
 
-        l2_strike = derive_l2_strike(l1_strike, multiplier) if is_multi_idx else l1_strike
+        l2_strike = resolve_l2_strike(strategy, l1_strike, opt_type,
+                                      multiplier=multiplier, interval=interval)
         sym1 = build_symbol(exchange1, index1, exp1, l1_strike, opt_type)
         sym2 = build_symbol(exchange2, index2, exp_l2, l2_strike, opt_type)
         syms = [sym1, sym2]
@@ -460,6 +464,23 @@ def run_monitor_cycle():
             d3_ranges = section.get("d3_ranges", {})  # pre-computed ranges
             section_key = f"{index}_{exp1}_{exp2}"
 
+            # All strategy settings must be read BEFORE the auto-range block —
+            # that block references them, and reading them later raised a
+            # NameError that its own except clause swallowed, so auto-range
+            # silently never produced anything.
+            strategy     = section.get("strategy",     "index_p1")
+            ratio        = float(section.get("ratio",        1.0))
+            multiplier   = float(section.get("multiplier",   3.3))
+            exp3         = section.get("exp3",    "")
+            index2       = section.get("index2",  index)
+            exchange2    = {"NIFTY":"NSE","BANKNIFTY":"NSE","FINNIFTY":"NSE","MIDCPNIFTY":"NSE","SENSEX":"BSE","BANKEX":"BSE"}.get(index2, "NSE")
+            exp_l2a      = section.get("exp_l2a", exp2)
+            exp_l2b      = section.get("exp_l2b", "")
+            interval     = int(section.get("interval", 100))
+            pc_mode      = section.get("pc_mode",      "default")
+            pc_threshold = float(section.get("pc_threshold", 10.0))
+            effective_pc = pc_threshold if pc_mode == "custom" else 10.0
+
             if not exp1 or not exp2:
                 continue
 
@@ -489,7 +510,8 @@ def run_monitor_cycle():
             if not d3_ranges and _should_try_autorange(section_key):
                 print(f"[Monitor] d3_ranges empty for {index} {exp1}-{exp2}, auto-fetching...")
                 try:
-                    from routers.monitor import _fetch_candles_range, spread_from_frames
+                    from routers.monitor import (_fetch_candles_range, spread_from_frames,
+                                                 resolve_l2_strike)
                     from services.fyers_service import build_symbol
                     from datetime import date as _date
 
@@ -507,8 +529,10 @@ def run_monitor_cycle():
 
                     for ot, strikes_tmp in [("CE", strike_map_tmp["ce"]), ("PE", strike_map_tmp["pe"])]:
                         for s_strike in strikes_tmp:
+                            l2_s = resolve_l2_strike(strategy, s_strike, ot,
+                                                     multiplier=multiplier, interval=interval)
                             sym1 = build_symbol(exchange, index, exp1, s_strike, ot)
-                            sym2 = build_symbol(exchange, index, exp2, s_strike, ot)
+                            sym2 = build_symbol(exchange, index, exp2, l2_s, ot)
 
                             days1 = _fetch_candles_range(fyers, sym1, w_start, w_end)
                             days2 = _fetch_candles_range(fyers, sym2, w_start, w_end)
@@ -563,17 +587,6 @@ def run_monitor_cycle():
                     _mark_autorange_fail(section_key)
                     print(f"[Monitor] Auto-range fetch failed: {re}")
 
-            strategy     = section.get("strategy",     "index_p1")
-            ratio        = float(section.get("ratio",        1.0))
-            multiplier   = float(section.get("multiplier",   3.3))
-            exp3         = section.get("exp3",    "")
-            index2       = section.get("index2",  index)
-            exchange2    = {"NIFTY":"NSE","BANKNIFTY":"NSE","FINNIFTY":"NSE","MIDCPNIFTY":"NSE","SENSEX":"BSE","BANKEX":"BSE"}.get(index2, "NSE")
-            exp_l2a      = section.get("exp_l2a", exp2)
-            exp_l2b      = section.get("exp_l2b", "")
-            pc_mode      = section.get("pc_mode",      "default")
-            pc_threshold = float(section.get("pc_threshold", 10.0))
-            effective_pc = pc_threshold if pc_mode == "custom" else 10.0
 
             strike_map = generate_strikes(strategy, base_strike, addon)
 
@@ -585,7 +598,8 @@ def run_monitor_cycle():
                         exchange2, index2, exp_l2a,
                         l1_strike, opt_type,
                         strategy=strategy, ratio=ratio,
-                        multiplier=multiplier, exp3=exp3, exp_l2b=exp_l2b
+                        multiplier=multiplier, interval=interval,
+                        exp3=exp3, exp_l2b=exp_l2b
                     )
                     if current is None:
                         continue
@@ -599,7 +613,7 @@ def run_monitor_cycle():
                         fyers, exchange, index, exp1, exp2,
                         l1_strike, opt_type, strategy, ratio,
                         exp3=exp3, exchange2=exchange2, index2=index2,
-                        exp_l2=exp_l2a, multiplier=multiplier,
+                        exp_l2=exp_l2a, multiplier=multiplier, interval=interval,
                     )
 
                     update_today_range(tracker_key, current)
