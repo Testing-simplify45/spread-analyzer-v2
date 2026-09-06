@@ -54,6 +54,22 @@ function deriveL2Strike(l1Strike, multiplier) {
   return Math.round(raw / 50) * 50
 }
 
+// Leg 2's strike — mirrors resolve_l2_strike() in the backend.
+//   nfo_bfo / butterfly_nfo : L1 / multiplier rounded to nearest 50
+//   index_p2                : CE -> L1 - interval, PE -> L1 + interval
+//   everything else         : same strike as leg 1
+function resolveL2Strike(strategy, l1Strike, optType, multiplier, interval) {
+  if (strategy === 'nfo_bfo' || strategy === 'butterfly_nfo') {
+    return deriveL2Strike(l1Strike, multiplier)
+  }
+  if (strategy === 'index_p2') {
+    const step = Number(interval) || 0
+    if (step <= 0) return l1Strike
+    return optType === 'CE' ? l1Strike - step : l1Strike + step
+  }
+  return l1Strike
+}
+
 function fmtVal(v) {
   if (v == null) return '—'
   return (v > 0 ? '+' : '') + v.toFixed(2)
@@ -142,6 +158,7 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
   const isIndexP2      = strategy === 'index_p2'
   const isNfoBfo       = strategy === 'nfo_bfo'
   const isMultiIndex   = MULTI_INDEX_STRATEGIES.includes(strategy)
+  const showsL2Strike  = isMultiIndex || strategy === 'index_p2'
   const isConfigurablePC = CONFIGURABLE_PC_STRATEGIES.includes(strategy)
 
   // index1 = main index (L1/L3), index2 = secondary (L2) for multi-index
@@ -332,7 +349,7 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
   useEffect(() => { return () => { if (intervalRef.current) clearInterval(intervalRef.current) } }, [])
 
   // ── Table ─────────────────────────────────────────────────────────────────
-  const SpreadTable = ({ data, title, color }) => (
+  const SpreadTable = ({ data, title, color, optType }) => (
     <div className="mb-4">
       <div className="flex items-center gap-2 mb-2">
         <div className={`w-2 h-2 rounded-full ${color}`} />
@@ -343,8 +360,8 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
           <thead>
             <tr className="border-b border-edge bg-panelLight/40">
               {[
-                isMultiIndex ? 'L1 Strike' : 'Strike',
-                isMultiIndex ? 'L2 Strike' : null,
+                showsL2Strike ? 'L1 Strike' : 'Strike',
+                showsL2Strike ? 'L2 Strike' : null,
                 'Prev Close','Current','Change','3D High','3D Low','5D High','5D Low','Status'
               ].filter(Boolean).map(h => (
                 <th key={h} className="text-[10px] font-mono text-ink uppercase tracking-wider py-2 px-3 text-left">{h}</th>
@@ -353,9 +370,14 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
           </thead>
           <tbody>
             {data.length === 0 ? (
-              <tr><td colSpan={isMultiIndex ? 10 : 9} className="text-center py-4 text-ink font-mono text-xs">Click Start Monitor</td></tr>
+              <tr><td colSpan={showsL2Strike ? 10 : 9} className="text-center py-4 text-ink font-mono text-xs">Click Start Monitor</td></tr>
             ) : data.map((row, i) => {
-              const l2Strike = isMultiIndex ? deriveL2Strike(row.strike, multiplier) : null
+              // Prefer the option type the backend tagged the row with;
+              // fall back to the table's own type.
+              const rowType  = row.opt_type || optType
+              const l2Strike = showsL2Strike
+                ? resolveL2Strike(strategy, row.strike, rowType, multiplier, interval)
+                : null
               const badges = statusBadge(row.current, row.d3_high, row.d3_low, row.prev_close,
                 isConfigurablePC ? (pcMode === 'custom' ? pcThreshold : 10) : 10)
               const isAtmRow = row.strike === atm
@@ -369,7 +391,7 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
                       </span>
                     )}
                   </td>
-                  {isMultiIndex && (
+                  {showsL2Strike && (
                     <td className="py-2 px-3 font-mono text-ink/70">{l2Strike}</td>
                   )}
                   <td className="py-2 px-3 font-mono text-ink">{fmtVal(row.prev_close)}</td>
@@ -647,8 +669,8 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
         </div>
       )}
 
-      <SpreadTable data={ceData} title="Call Spreads (CE)" color="bg-blue" />
-      <SpreadTable data={peData} title="Put Spreads (PE)"  color="bg-amber-400" />
+      <SpreadTable data={ceData} title="Call Spreads (CE)" color="bg-blue"      optType="CE" />
+      <SpreadTable data={peData} title="Put Spreads (PE)"  color="bg-amber-400" optType="PE" />
     </div>
   )
 })
