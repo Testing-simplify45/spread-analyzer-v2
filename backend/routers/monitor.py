@@ -57,9 +57,11 @@ def compute_spread(strategy: str, ltp1, ltp2, ltp3, ratio: float, multiplier: fl
         if ltp2 is None or ltp3 is None: return None
         return round(ltp1 - (ltp2 * r) - (ltp2 * r) + ltp3, 2)
     elif strategy == "butterfly_nfo":
-        # [L1 - (L2*ratio)] + [L3 - (L2*ratio)]
+        # (Leg1 - Leg2A*ratio) + (Leg3 - Leg2B*ratio), where Leg3 IS Leg1 —
+        # both wings share one index/expiry/strike, matching the strategy page.
+        # Here ltp2 = Leg 2A (far) and ltp3 = Leg 2B (near).
         if ltp2 is None or ltp3 is None: return None
-        return round((ltp1 - (ltp2 * r)) + (ltp3 - (ltp2 * r)), 2)
+        return round((ltp1 - (ltp2 * r)) + (ltp1 - (ltp3 * r)), 2)
     return None
 
 
@@ -177,7 +179,7 @@ def _fetch_candles_range(fyers, symbol: str, start_date, end_date, resolution: s
     return by_day
 
 
-def spread_from_frames(df1, df2, strategy, ratio, df3=None, df2b=None):
+def spread_from_frames(df1, df2, strategy, ratio, df3=None):
     """
     Compute a spread series from already-fetched candle frames for ONE day.
 
@@ -204,11 +206,6 @@ def spread_from_frames(df1, df2, strategy, ratio, df3=None, df2b=None):
             return pd.DataFrame()
         df3 = df3[~df3.index.duplicated(keep="last")]
         common = common.intersection(df3.index)
-    if df2b is not None:
-        if df2b.empty:
-            return pd.DataFrame()
-        df2b = df2b[~df2b.index.duplicated(keep="last")]
-        common = common.intersection(df2b.index)
 
     if common.empty:
         return pd.DataFrame()
@@ -216,12 +213,6 @@ def spread_from_frames(df1, df2, strategy, ratio, df3=None, df2b=None):
     r = ratio or 1.0
     c1, h1, l1 = df1.loc[common, "close"], df1.loc[common, "high"], df1.loc[common, "low"]
     c2, h2, l2 = df2.loc[common, "close"], df2.loc[common, "high"], df2.loc[common, "low"]
-
-    # butterfly_nfo averages the two L2 legs
-    if df2b is not None:
-        c2 = (c2 + df2b.loc[common, "close"]) / 2
-        h2 = (h2 + df2b.loc[common, "high"])  / 2
-        l2 = (l2 + df2b.loc[common, "low"])   / 2
 
     if strategy in ("index_p1", "index_p2", "nfo_bfo"):
         spread      = c1 - c2 * r
@@ -233,11 +224,12 @@ def spread_from_frames(df1, df2, strategy, ratio, df3=None, df2b=None):
         spread_high = h1 - (l2 * r) - (l2 * r) + h3
         spread_low  = l1 - (h2 * r) - (h2 * r) + l3
     elif strategy == "butterfly_nfo":
-        # [L1 - (L2*r)] + [L3 - (L2*r)]
+        # (Leg1 - Leg2A*r) + (Leg1 - Leg2B*r) — leg 3 is the same symbol as leg 1.
+        # df2 carries Leg 2A, df3 carries Leg 2B.
         c3, h3, l3 = df3.loc[common, "close"], df3.loc[common, "high"], df3.loc[common, "low"]
-        spread      = (c1 - c2 * r) + (c3 - c2 * r)
-        spread_high = (h1 - l2 * r) + (h3 - l2 * r)
-        spread_low  = (l1 - h2 * r) + (l3 - h2 * r)
+        spread      = (c1 - c2 * r) + (c1 - c3 * r)
+        spread_high = (h1 - l2 * r) + (h1 - l3 * r)
+        spread_low  = (l1 - h2 * r) + (l1 - h3 * r)
     else:
         return pd.DataFrame()
 
@@ -373,64 +365,147 @@ def load_config(user_id: str = "default", authorization: str = Header(None)):
 
 # ── ATM ───────────────────────────────────────────────────────────────────────
 
+# Spot cache — several sections asking for the same index within a few seconds
+# should not each hit Fyers. The working /straddle/all-spots endpoint batches
+# three indices into one call; we do the same and cache briefly.
+_spot_cache: dict = {}
+_spot_stamp: dict = {}
+_SPOT_TTL_SEC = 10
+
+
+def _fetch_spots(fyers, indices: list) -> dict:
+    """
+    Fetch spot prices for several indices in ONE batched quotes call,
+    mirroring /straddle/all-spots. Returns {INDEX: ltp} plus a possible
+    '_error' key describing why nothing came back.
+    """
+    import time
+    from services.fyers_service import INDEX_SYMBOL
+
+    now = time.time()
+    out, need = {}, []
+    for ix in indices:
+        ix = ix.upper()
+        if _spot_stamp.get(ix) and (now - _spot_stamp[ix]) < _SPOT_TTL_SEC:
+            out[ix] = _spot_cache[ix]
+        elif INDEX_SYMBOL.get(ix):
+            need.append(ix)
+
+    if not need:
+        return out
+
+    sym_to_ix = {INDEX_SYMBOL[ix]: ix for ix in need}
+    try:
+        resp = fyers.quotes(data={"symbols": ",".join(sym_to_ix.keys())})
+        if resp.get("s") != "ok":
+            out["_error"] = {"code": resp.get("code"), "message": resp.get("message")}
+            print(f"[Spot] batch failed -> code={resp.get('code')} {resp.get('message')}")
+            return out
+
+        for item in resp.get("d", []):
+            name = item.get("n", "")
+            v    = item.get("v", {})
+            ltp  = float(v.get("lp") or v.get("last_price") or 0)
+            if ltp <= 0:
+                continue
+            # Match on symbol name, as /straddle/all-spots does
+            for sym, ix in sym_to_ix.items():
+                if sym == name or sym.split(":")[-1] in name:
+                    out[ix] = ltp
+                    _spot_cache[ix] = ltp
+                    _spot_stamp[ix] = time.time()
+                    break
+    except Exception as e:
+        out["_error"] = {"code": None, "message": str(e)}
+        print(f"[Spot] batch exception: {e}")
+
+    # Fallback: index quotes can fail while history stays healthy. Derive spot
+    # from the index's most recent candle instead of giving up.
+    still_missing = [ix for ix in need if ix not in out]
+    for ix in still_missing:
+        ltp = _spot_from_history(fyers, INDEX_SYMBOL[ix])
+        if ltp:
+            out[ix] = ltp
+            _spot_cache[ix] = ltp
+            _spot_stamp[ix] = time.time()
+            print(f"[Spot] {ix} recovered from history: {ltp}")
+
+    return out
+
+
+def _spot_from_history(fyers, symbol: str):
+    """
+    Last traded price for an index from candle history.
+    Used when quotes() is unavailable but history() still works.
+    """
+    from datetime import date as _date
+    try:
+        d = _date.today()
+        # Walk back far enough to clear a weekend or holiday
+        start = d - timedelta(days=6)
+        resp = fyers.history(data={
+            "symbol": symbol, "resolution": "5", "date_format": "1",
+            "range_from": start.strftime("%Y-%m-%d"),
+            "range_to":   d.strftime("%Y-%m-%d"),
+            "cont_flag": "1",
+        })
+        if resp.get("s") != "ok":
+            print(f"[Spot] history fallback for {symbol} -> "
+                  f"{resp.get('code')} {resp.get('message')}")
+            return None
+        candles = resp.get("candles") or []
+        if not candles:
+            return None
+        return float(candles[-1][4])   # close of the most recent candle
+    except Exception as e:
+        print(f"[Spot] history fallback for {symbol} failed: {e}")
+        return None
+
+
 @router.get("/atm/{index}")
 def get_atm(index: str, addon: int = 100, authorization: str = Header(None)):
     """
     Resolve the ATM strike from the live spot price.
-    Surfaces the real Fyers error instead of flattening everything into a 404,
-    so quota exhaustion and token expiry are distinguishable in the logs.
+    Uses a batched, briefly-cached quotes call so multiple sections don't each
+    hammer Fyers, and reports Fyers' own code/message rather than guessing.
     """
-    import time
     fyers = _get_fyers(authorization)
     try:
         from services.fyers_service import INDEX_SYMBOL, round_to_nearest
 
-        sym = INDEX_SYMBOL.get(index.upper())
-        if not sym:
+        ix = index.upper()
+        if not INDEX_SYMBOL.get(ix):
             raise HTTPException(status_code=404, detail=f"Unknown index: {index}")
 
-        last = None
-        for attempt in range(3):
-            resp = fyers.quotes(data={"symbols": sym})
-            last = resp
+        # Warm the whole set — the extra symbols are free in a batched call
+        spots = _fetch_spots(fyers, list(INDEX_SYMBOL.keys()))
+        ltp = spots.get(ix)
 
-            if resp.get("s") == "ok":
-                v = (resp.get("d") or [{}])[0].get("v", {})
-                ltp = float(v.get("lp") or v.get("last_price") or 0)
-                if ltp > 0:
-                    return {"spot": ltp, "atm": round_to_nearest(ltp, addon)}
-                print(f"[ATM] {index} returned ok but ltp=0 (market closed?)")
-                break
+        if ltp and ltp > 0:
+            return {"spot": ltp, "atm": round_to_nearest(ltp, addon)}
 
-            code = resp.get("code")
-            msg  = resp.get("message", "")
-            print(f"[ATM] {index} attempt {attempt+1}/3 -> code={code} msg={msg}")
+        err   = spots.get("_error") or {}
+        code  = err.get("code")
+        msg   = err.get("message", "")
+        lower = str(msg).lower()
+        raw   = f"[Fyers code={code}: {msg}]" if msg else "[no error reported]"
 
-            # 429 = rate limited, worth retrying. Auth errors are not.
-            if code == 429 or "limit" in str(msg).lower():
-                time.sleep(1.5 * (attempt + 1))
-                continue
-            break
+        if code == 429 or any(k in lower for k in ("rate limit", "too many", "throttl")):
+            raise HTTPException(status_code=429,
+                detail=f"Fyers is rate limiting requests. Wait a few minutes. {raw}")
 
-        code = (last or {}).get("code")
-        msg  = (last or {}).get("message", "no message")
+        if code in (401, 403, -15, -16, -17) or any(
+                k in lower for k in ("token", "unauthor", "invalid app", "expired")):
+            raise HTTPException(status_code=401,
+                detail=f"Fyers rejected the token — log out and log in again. {raw}")
 
-        if code == 429 or "limit" in str(msg).lower():
-            raise HTTPException(
-                status_code=429,
-                detail=f"Fyers rate limit reached while fetching {index} spot. "
-                       f"Wait a few minutes and retry. ({msg})"
-            )
-        if code in (401, 403) or "token" in str(msg).lower() or "auth" in str(msg).lower():
-            raise HTTPException(
-                status_code=401,
-                detail=f"Fyers token rejected — please log in again. ({msg})"
-            )
+        if code in (-300, -50) or "bad request" in lower or "invalid" in lower:
+            raise HTTPException(status_code=400,
+                detail=f"Fyers rejected the spot request. {raw}")
 
-        raise HTTPException(
-            status_code=404,
-            detail=f"Could not fetch {index} spot price. Fyers said: code={code} {msg}"
-        )
+        raise HTTPException(status_code=404,
+            detail=f"Could not resolve {ix} spot from quotes or history. "
+                   f"Set First Leg to Custom to continue without it. {raw}")
     except HTTPException:
         raise
     except Exception as e:
@@ -455,11 +530,55 @@ def diagnose(index: str = "NIFTY", exp1: str = "", strike: int = 0,
     try:
         from services.fyers_service import build_symbol, INDEX_SYMBOL
 
-        # 1. Quotes — this is what /live uses and it currently works
+        # 1a. Quotes with a SINGLE bare symbol — the shape /atm used
         spot_sym = INDEX_SYMBOL.get(index.upper())
-        q = fyers.quotes(data={"symbols": spot_sym})
-        out["quotes"] = {"symbol": spot_sym, "s": q.get("s"),
-                         "code": q.get("code"), "message": q.get("message")}
+        q1 = fyers.quotes(data={"symbols": spot_sym})
+        out["quotes_single_symbol"] = {
+            "sent": spot_sym,
+            "s": q1.get("s"), "code": q1.get("code"), "message": q1.get("message"),
+            "got_price": bool(q1.get("d")),
+        }
+
+        # 1b. Quotes with a COMMA-JOINED list — the shape every working path uses
+        multi = ",".join([INDEX_SYMBOL["NIFTY"], INDEX_SYMBOL["SENSEX"],
+                          INDEX_SYMBOL["BANKNIFTY"]])
+        q2 = fyers.quotes(data={"symbols": multi})
+        out["quotes_multi_symbol"] = {
+            "sent": multi,
+            "s": q2.get("s"), "code": q2.get("code"), "message": q2.get("message"),
+            "got_price": bool(q2.get("d")),
+        }
+
+        # 1c. Same call shape, but an OPTION symbol instead of an index symbol.
+        # Other tabs prove option quotes work, so this isolates index symbols.
+        opt_probe = None
+        if exp1 and strike:
+            opt_probe = build_symbol(
+                "NSE" if index.upper() != "SENSEX" else "BSE",
+                index.upper(), exp1, strike, opt_type)
+            q3 = fyers.quotes(data={"symbols": opt_probe})
+            out["quotes_option_symbol"] = {
+                "sent": opt_probe, "s": q3.get("s"),
+                "code": q3.get("code"), "message": q3.get("message"),
+                "got_price": bool(q3.get("d")),
+            }
+
+        # 1d. Can we recover spot from history when quotes is down?
+        fb = _spot_from_history(fyers, spot_sym)
+        out["spot_from_history_fallback"] = fb
+
+        index_ok  = q1.get("s") == "ok" or q2.get("s") == "ok"
+        option_ok = out.get("quotes_option_symbol", {}).get("s") == "ok"
+        if not index_ok and option_ok:
+            out["verdict"] = ("Index-symbol quotes fail while option-symbol quotes "
+                              "succeed. The history fallback supplies spot instead.")
+        elif not index_ok and fb:
+            out["verdict"] = ("Index quotes are down but history works — "
+                              f"fallback resolved spot as {fb}.")
+        elif index_ok:
+            out["verdict"] = "Index quotes are working now."
+        else:
+            out["verdict"] = "Both quotes and history are failing — check the token."
 
         if not exp1 or not strike:
             out["note"] = "Pass exp1 and strike to also test the history API."
@@ -554,17 +673,15 @@ def fetch_live_spreads(body: FetchLiveRequest, authorization: str = Header(None)
 
                 if is_butterfly:
                     if is_multi_idx:
-                        # L3 = index1, exp3; L2b = index2 far
-                        s3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, OT)
-                        exp_l2b = body.exp_l2b if body.exp_l2b else exp_l2
-                        s2b = build_symbol(body.exchange2, body.index2, exp_l2b, l2_strike, OT)
-                        sym_maps[opt_type][l1_strike]["s3"]  = s3
-                        sym_maps[opt_type][l1_strike]["s2b"] = s2b
-                        all_syms += [s3, s2b]
+                        # Leg 1 and Leg 3 are the SAME symbol (one index/expiry/strike).
+                        # The third symbol we need is Leg 2B — index 2, near expiry.
+                        exp_l2b_code = body.exp_l2b or exp_l2
+                        s3 = build_symbol(body.exchange2, body.index2, exp_l2b_code, l2_strike, OT)
                     else:
+                        # Butterfly Index: three distinct expiries on one index
                         s3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, OT)
-                        sym_maps[opt_type][l1_strike]["s3"] = s3
-                        all_syms.append(s3)
+                    sym_maps[opt_type][l1_strike]["s3"] = s3
+                    all_syms.append(s3)
 
         ltp_map = get_batch_ltp(fyers, list(set(all_syms)))
 
@@ -578,12 +695,6 @@ def fetch_live_spreads(body: FetchLiveRequest, authorization: str = Header(None)
                 ltp1 = ltp_map.get(sm.get("s1"))
                 ltp2 = ltp_map.get(sm.get("s2"))
                 ltp3 = ltp_map.get(sm.get("s3")) if is_butterfly else None
-
-                # For butterfly_nfo: average L2 legs if both available
-                if strategy == "butterfly_nfo" and sm.get("s2b"):
-                    ltp2b = ltp_map.get(sm["s2b"])
-                    if ltp2 is not None and ltp2b is not None:
-                        ltp2 = (ltp2 + ltp2b) / 2  # average of near and far L2
 
                 current = compute_spread(strategy, ltp1, ltp2, ltp3, ratio, multiplier)
                 results.append({
@@ -628,19 +739,22 @@ def fetch_prev_close(body: FetchLiveRequest, authorization: str = Header(None)):
 
                     sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
                     sym2 = build_symbol(body.exchange2, body.index2, exp_l2, l2_strike, opt_type)
-                    sym3 = sym2b = None
+                    sym3 = None
                     if is_butterfly:
-                        sym3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, opt_type)
-                        if is_multi_idx and body.exp_l2b:
-                            sym2b = build_symbol(body.exchange2, body.index2, body.exp_l2b, l2_strike, opt_type)
+                        if is_multi_idx:
+                            # Leg 3 == Leg 1, so the third leg we fetch is Leg 2B
+                            sym3 = build_symbol(body.exchange2, body.index2,
+                                                body.exp_l2b or exp_l2, l2_strike, opt_type)
+                        else:
+                            sym3 = build_symbol(body.exchange1, body.index1,
+                                                body.exp3, l1_strike, opt_type)
 
                     # Reuses the range cache when Range was clicked first
                     d1 = _fetch_candles_range(fyers, sym1, yesterday, yesterday).get(yesterday)
                     d2 = _fetch_candles_range(fyers, sym2, yesterday, yesterday).get(yesterday)
                     d3 = _fetch_candles_range(fyers, sym3, yesterday, yesterday).get(yesterday) if sym3 else None
-                    d2b = _fetch_candles_range(fyers, sym2b, yesterday, yesterday).get(yesterday) if sym2b else None
 
-                    df = spread_from_frames(d1, d2, body.strategy, body.ratio, df3=d3, df2b=d2b)
+                    df = spread_from_frames(d1, d2, body.strategy, body.ratio, df3=d3)
                     results[key] = round(float(df["spread"].iloc[-1]), 2) if not df.empty else None
                 except Exception as inner:
                     print(f"[PrevClose] {key} failed: {inner}")
@@ -694,17 +808,20 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
 
                     sym1 = build_symbol(body.exchange1, body.index1, body.exp1, l1_strike, opt_type)
                     sym2 = build_symbol(body.exchange2, body.index2, exp_l2, l2_strike, opt_type)
-                    sym3 = sym2b = None
+                    sym3 = None
                     if is_butterfly:
-                        sym3 = build_symbol(body.exchange1, body.index1, body.exp3, l1_strike, opt_type)
-                        if is_multi_idx and body.exp_l2b:
-                            sym2b = build_symbol(body.exchange2, body.index2, body.exp_l2b, l2_strike, opt_type)
+                        if is_multi_idx:
+                            # Leg 3 == Leg 1, so the third leg we fetch is Leg 2B
+                            sym3 = build_symbol(body.exchange2, body.index2,
+                                                body.exp_l2b or exp_l2, l2_strike, opt_type)
+                        else:
+                            sym3 = build_symbol(body.exchange1, body.index1,
+                                                body.exp3, l1_strike, opt_type)
 
                     # ONE ranged call per symbol for the whole window
                     days1 = _fetch_candles_range(fyers, sym1, window_start, window_end)
                     days2 = _fetch_candles_range(fyers, sym2, window_start, window_end)
                     days3 = _fetch_candles_range(fyers, sym3, window_start, window_end) if sym3 else None
-                    days2b = _fetch_candles_range(fyers, sym2b, window_start, window_end) if sym2b else None
 
                     day_hi, day_lo = [], []
                     for d in trading_days:                # most recent first
@@ -713,15 +830,12 @@ def fetch_range(body: FetchRangeRequest, authorization: str = Header(None)):
                         f1 = days1.get(d)
                         f2 = days2.get(d)
                         f3 = days3.get(d) if days3 is not None else None
-                        f2b = days2b.get(d) if days2b is not None else None
                         if f1 is None or f2 is None:
                             continue
                         if days3 is not None and f3 is None:
                             continue
-                        if days2b is not None and f2b is None:
-                            continue
 
-                        df = spread_from_frames(f1, f2, body.strategy, body.ratio, df3=f3, df2b=f2b)
+                        df = spread_from_frames(f1, f2, body.strategy, body.ratio, df3=f3)
                         if not df.empty:
                             # Close-based: the spread values that actually printed
                             s = df["spread"].dropna()
