@@ -41,7 +41,8 @@ _prev_close_day:   list = [None]
 def get_prev_close(fyers, exchange: str, index: str, exp1: str, exp2: str,
                    strike: int, opt_type: str, strategy: str, ratio: float,
                    exp3: str = "", exchange2: str = None, index2: str = None,
-                   exp_l2: str = "", multiplier: float = 3.3, interval: int = 0):
+                   exp_l2: str = "", exp_l2b: str = "",
+                   multiplier: float = 3.3, interval: int = 0):
     """
     Last completed session's closing spread. Cached per day.
     The scheduler must derive this itself — the UI never persists it.
@@ -77,7 +78,12 @@ def get_prev_close(fyers, exchange: str, index: str, exp1: str, exp2: str,
 
         sym1 = build_symbol(exchange, index, exp1, strike, opt_type)
         sym2 = build_symbol(ex2, ix2, e_l2, l2s, opt_type)
-        sym3 = build_symbol(exchange, index, exp3, strike, opt_type) if (is_bfly and exp3) else None
+        sym3 = None
+        if is_bfly:
+            if is_multi:
+                sym3 = build_symbol(ex2, ix2, exp_l2b or e_l2, l2s, opt_type)
+            elif exp3:
+                sym3 = build_symbol(exchange, index, exp3, strike, opt_type)
 
         f1 = _fetch_candles_range(fyers, sym1, d, d).get(d)
         f2 = _fetch_candles_range(fyers, sym2, d, d).get(d)
@@ -246,8 +252,10 @@ def compute_spread_value(strategy: str, ltp1, ltp2, ltp3, ratio: float, multipli
         if ltp2 is None or ltp3 is None: return None
         return round(ltp1 - (ltp2 * r) - (ltp2 * r) + ltp3, 2)
     elif strategy == "butterfly_nfo":
+        # (Leg1 - Leg2A*r) + (Leg3 - Leg2B*r) where Leg3 IS Leg1.
+        # ltp2 = Leg 2A (far), ltp3 = Leg 2B (near).
         if ltp2 is None or ltp3 is None: return None
-        return round((ltp1 - (ltp2 * r)) + (ltp3 - (ltp2 * r)), 2)
+        return round((ltp1 - (ltp2 * r)) + (ltp1 - (ltp3 * r)), 2)
     return None
 
 
@@ -270,24 +278,20 @@ def get_spread_ltp(fyers,
         sym1 = build_symbol(exchange1, index1, exp1, l1_strike, opt_type)
         sym2 = build_symbol(exchange2, index2, exp_l2, l2_strike, opt_type)
         syms = [sym1, sym2]
-        sym3 = sym2b = None
+        sym3 = None
 
         if is_butterfly:
-            sym3 = build_symbol(exchange1, index1, exp3, l1_strike, opt_type)
+            if is_multi_idx:
+                # Leg 3 == Leg 1, so the third leg is Leg 2B on index 2
+                sym3 = build_symbol(exchange2, index2, exp_l2b or exp_l2, l2_strike, opt_type)
+            else:
+                sym3 = build_symbol(exchange1, index1, exp3, l1_strike, opt_type)
             syms.append(sym3)
-            if is_multi_idx and exp_l2b:
-                sym2b = build_symbol(exchange2, index2, exp_l2b, l2_strike, opt_type)
-                syms.append(sym2b)
 
         ltp_map = get_batch_ltp(fyers, syms)
         ltp1 = ltp_map.get(sym1)
         ltp2 = ltp_map.get(sym2)
         ltp3 = ltp_map.get(sym3) if sym3 else None
-
-        if sym2b:
-            ltp2b = ltp_map.get(sym2b)
-            if ltp2 is not None and ltp2b is not None:
-                ltp2 = (ltp2 + ltp2b) / 2
 
         return compute_spread_value(strategy, ltp1, ltp2, ltp3, ratio, multiplier)
     except Exception as e:
@@ -613,7 +617,8 @@ def run_monitor_cycle():
                         fyers, exchange, index, exp1, exp2,
                         l1_strike, opt_type, strategy, ratio,
                         exp3=exp3, exchange2=exchange2, index2=index2,
-                        exp_l2=exp_l2a, multiplier=multiplier, interval=interval,
+                        exp_l2=exp_l2a, exp_l2b=exp_l2b,
+                        multiplier=multiplier, interval=interval,
                     )
 
                     update_today_range(tracker_key, current)
