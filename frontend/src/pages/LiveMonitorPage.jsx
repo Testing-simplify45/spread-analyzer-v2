@@ -23,6 +23,15 @@ const CONFIGURABLE_PC_STRATEGIES = ['nfo_bfo', 'butterfly_index', 'butterfly_nfo
 
 function round2(v) { return Math.round(v * 100) / 100 }
 
+// Shown under the section header so the maths is never in doubt
+const FORMULA_TEXT = {
+  index_p1:        'Leg1 − (Leg2 × Ratio)',
+  index_p2:        'Leg1 − (Leg2 × Ratio)   ·   CE: L2 = L1 − Interval, PE: L2 = L1 + Interval',
+  nfo_bfo:         'Leg1 − (Leg2 × Ratio)   ·   L2 strike = L1 ÷ Multiplier (nearest 50)',
+  butterfly_index: 'Leg1 − (Leg2 × Ratio) − (Leg2 × Ratio) + Leg3',
+  butterfly_nfo:   '(Leg1 − Leg2A × Ratio) + (Leg3 − Leg2B × Ratio)',
+}
+
 // ── Formula ───────────────────────────────────────────────────────────────────
 // NFO/BFO:        L1 - (L2 × ratio)          — L2 strike = round(L1/multiplier, 50)
 // Butterfly NFO:  [L1 - (L2×ratio)] + [L3 - (L2×ratio)]  = L1 + L3 - 2×(L2×ratio)
@@ -41,8 +50,10 @@ function computeSpread(strategy, ltp1, ltp2, ltp3, ratio) {
       if (ltp2 == null || ltp3 == null) return null
       return round2(ltp1 - (ltp2 * r) - (ltp2 * r) + ltp3)
     case 'butterfly_nfo':
+      // (Leg1 - Leg2A*r) + (Leg3 - Leg2B*r), where Leg3 IS Leg1.
+      // ltp2 = Leg 2A (far), ltp3 = Leg 2B (near).
       if (ltp2 == null || ltp3 == null) return null
-      return round2((ltp1 - (ltp2 * r)) + (ltp3 - (ltp2 * r)))
+      return round2((ltp1 - (ltp2 * r)) + (ltp1 - (ltp3 * r)))
     default:
       return null
   }
@@ -194,14 +205,9 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
         setCeStrikes(ce)
         setPeStrikes(pe)
         setAtm(base)
-        // Best-effort: fetch the real ATM just to display it, ignore failures
-        try {
-          const r = await axios.get(`${BASE_URL}/monitor/atm/${index1}`, {
-            params: { addon: section.addon },
-            headers: { Authorization: authHeader }
-          })
-          setLiveAtm(r.data.atm)
-        } catch { setLiveAtm(null) }
+        // Don't make a second call just for the reference badge — the ATM the
+        // section already knows is good enough, and an extra quotes request per
+        // section is exactly what overloads Fyers when several sections start.
         return { atm: base, ce, pe }
       }
 
@@ -325,8 +331,15 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
 
   const handleStart = useCallback(async () => {
     if (!section.exp1 || !section.exp2) { alert('Please select Exp1 and Exp2'); return }
-    if (isButterfly && !section.exp3)   { alert('Please select Exp3 for butterfly'); return }
-    if (isMultiIndex && !section.exp_l2a) { alert('Please select L2 expiry'); return }
+    if (isButterfly && !isMultiIndex && !section.exp3) {
+      alert('Please select the Leg 3 expiry'); return
+    }
+    if (isMultiIndex && !section.exp_l2a) {
+      alert(`Please select the ${index2} far expiry (Leg 2A)`); return
+    }
+    if (strategy === 'butterfly_nfo' && !section.exp_l2b) {
+      alert(`Please select the ${index2} near expiry (Leg 2B)`); return
+    }
     const result = await fetchAtmAndStrikes()
     if (!result) return
     const { ce, pe } = result
@@ -438,10 +451,17 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-cyan animate-pulse" />
-          <span className="text-sm font-bold text-bright font-mono">
-            {STRATEGIES.find(s => s.value === strategy)?.label} · {index1}
-            {isMultiIndex && ` / ${index2}`}
-          </span>
+          <div>
+            <span className="text-sm font-bold text-bright font-mono">
+              {STRATEGIES.find(s => s.value === strategy)?.label} · {index1}
+              {isMultiIndex && ` / ${index2}`}
+            </span>
+            {FORMULA_TEXT[strategy] && (
+              <p className="text-[10px] font-mono text-cyan/70 mt-0.5">
+                Formula: {FORMULA_TEXT[strategy]}
+              </p>
+            )}
+          </div>
           {atm && (
             flMode === 'custom' ? (
               <span className="text-[10px] font-mono text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full">
@@ -495,16 +515,19 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
 
         {/* L1 Expiry */}
         <ExpirySelect
-          label={isMultiIndex ? 'L1 Expiry' : 'Leg 1 Expiry'}
+          label={strategy === 'butterfly_nfo'
+            ? `${index1} Expiry (Leg 1 & 3)`
+            : (isMultiIndex ? `${index1} Expiry (L1)` : 'Leg 1 Expiry')}
           value={section.exp1 || ''}
           expList={expList1}
           onChange={v => { const e = expList1.find(x => x.code === v); onUpdate({ ...section, exp1: v, exp1_label: e?.label || v }) }}
         />
 
-        {/* L3 Expiry for butterfly (same index as L1) */}
-        {isButterfly ? (
+        {/* Butterfly Index needs a distinct L3 expiry.
+            Butterfly NFO/BFO does NOT — legs 1 and 3 are the same contract. */}
+        {isButterfly && !isMultiIndex ? (
           <ExpirySelect
-            label="L3 Expiry (same as L1)"
+            label="L3 Expiry (far)"
             value={section.exp3 || ''}
             expList={expList1}
             onChange={v => { const e = expList1.find(x => x.code === v); onUpdate({ ...section, exp3: v, exp3_label: e?.label || v }) }}
@@ -528,14 +551,14 @@ const MonitorSection = forwardRef(function MonitorSection({ section, authHeader,
           {isMultiIndex && (
             <>
               <ExpirySelect
-                label={isButterfly ? 'L2A Expiry (near)' : 'L2 Expiry'}
+                label={isButterfly ? `${index2} Far Expiry (Leg 2A)` : `${index2} Expiry (L2)`}
                 value={section.exp_l2a || ''}
                 expList={expList2}
                 onChange={v => { const e = expList2.find(x => x.code === v); onUpdate({ ...section, exp_l2a: v, exp2: v, exp2_label: e?.label || v }) }}
               />
               {isButterfly && (
                 <ExpirySelect
-                  label="L2B Expiry (far)"
+                  label={`${index2} Near Expiry (Leg 2B)`}
                   value={section.exp_l2b || ''}
                   expList={expList2}
                   onChange={v => { const e = expList2.find(x => x.code === v); onUpdate({ ...section, exp_l2b: v }) }}
