@@ -15,6 +15,10 @@ from fyers_apiv3 import fyersModel
 _MONTHS = ["JAN","FEB","MAR","APR","MAY","JUN",
            "JUL","AUG","SEP","OCT","NOV","DEC"]
 
+# Fyers weekly-expiry month character: 1-9, then O / N / D
+_WEEKLY_MONTH_CHAR = {1:"1", 2:"2", 3:"3", 4:"4", 5:"5", 6:"6",
+                      7:"7", 8:"8", 9:"9", 10:"O", 11:"N", 12:"D"}
+
 # ── Fyers index symbols ───────────────────────────────────────────────────────
 INDEX_SYMBOL = {
     "NIFTY":      "NSE:NIFTY50-INDEX",
@@ -52,9 +56,11 @@ def build_symbol(exchange: str, underlying: str, expiry_code: str,
         # Monthly format
         return f"{exchange}:{underlying}{code}{strike}{ot}"
 
-    # Weekly YYMMDD → YYM(no-zero)DD
+    # Weekly YYMMDD → YY + M + DD
+    # Fyers uses one character for the month: 1-9 for Jan-Sep,
+    # then O, N, D for Oct, Nov, Dec (e.g. NIFTY26N17... for 17 Nov 2026)
     yy = code[0:2]
-    mm = str(int(code[2:4]))
+    mm = _WEEKLY_MONTH_CHAR[int(code[2:4])]
     dd = code[4:6]
     return f"{exchange}:{underlying}{yy}{mm}{dd}{strike}{ot}"
 
